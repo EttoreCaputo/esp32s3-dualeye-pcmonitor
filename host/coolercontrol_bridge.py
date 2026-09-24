@@ -69,7 +69,7 @@ def named_temp(status: dict[str, Any], name: str) -> float | None:
     return None
 
 
-def max_temp(status: dict[str, Any], skip_hotspot: bool = False) -> float | None:
+def _temp_values(status: dict[str, Any], skip_hotspot: bool = False) -> list[float]:
     values = []
     for entry in status.get("temps") or []:
         name = str(entry.get("name") or "")
@@ -77,7 +77,17 @@ def max_temp(status: dict[str, Any], skip_hotspot: bool = False) -> float | None
             continue
         if isinstance(entry.get("temp"), (int, float)):
             values.append(float(entry["temp"]))
+    return values
+
+
+def max_temp(status: dict[str, Any], skip_hotspot: bool = False) -> float | None:
+    values = _temp_values(status, skip_hotspot=skip_hotspot)
     return max(values) if values else None
+
+
+def avg_temp(status: dict[str, Any], skip_hotspot: bool = False) -> float | None:
+    values = _temp_values(status, skip_hotspot=skip_hotspot)
+    return sum(values) / len(values) if values else None
 
 
 def find_channel(status: dict[str, Any], name: str) -> dict[str, Any] | None:
@@ -147,7 +157,7 @@ def extract_snapshot(status_payload: dict[str, Any]) -> dict[str, Any] | None:
     gpu_status = latest_status(gpu) if gpu else {}
 
     cpu_obj = _device_payload(
-        max_temp(cpu_status),
+        avg_temp(cpu_status),
         channel_duty(cpu_status, "CPU Load"),
         channel_freq(cpu_status, "CPU Freq Avg"),
         channel_watts(cpu_status),
@@ -436,7 +446,7 @@ def self_test() -> None:
     }
     snapshot = extract_snapshot(payload)
     assert snapshot is not None
-    assert snapshot["cpu"] == {"temp_c": 38.0, "load_pct": 1.8, "clock_mhz": 1572, "power_w": 14.6}
+    assert snapshot["cpu"] == {"temp_c": 36.3, "load_pct": 1.8, "clock_mhz": 1572, "power_w": 14.6}
     assert snapshot["gpu"] == {"temp_c": 31.0, "load_pct": 0.0, "clock_mhz": 210, "power_w": 20.0}
     assert snapshot["fans"] == [{"id": "cpu", "rpm": 3770}, {"id": "gpu", "rpm": 0}]
     assert normalize_cookie("abc") == "cc=abc"
