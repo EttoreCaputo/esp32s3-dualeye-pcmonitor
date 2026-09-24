@@ -27,8 +27,6 @@ typedef struct {
     float usage_pct;
     float clock_ghz;
     float power_w;
-    float memory_used_gb;
-    float memory_total_gb;
 } metrics_temp_t;
 
 typedef struct {

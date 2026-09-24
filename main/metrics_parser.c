@@ -226,14 +226,6 @@ static bool parse_temp_object(js_t *j, metrics_temp_t *temp)
             if (!read_number_field(j, &temp->power_w)) {
                 return false;
             }
-        } else if (strcmp(key, "memory_used_gb") == 0) {
-            if (!read_number_field(j, &temp->memory_used_gb)) {
-                return false;
-            }
-        } else if (strcmp(key, "memory_total_gb") == 0) {
-            if (!read_number_field(j, &temp->memory_total_gb)) {
-                return false;
-            }
         } else if (!skip_value(j, 1)) {
             return false;
         }

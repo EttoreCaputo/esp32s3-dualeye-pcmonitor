@@ -6,9 +6,11 @@
 #include "esp_log.h"
 
 LV_FONT_DECLARE(lv_font_montserrat_bold_12)
-LV_FONT_DECLARE(lv_font_montserrat_bold_64)
-#include "src/draw/lv_draw_line.h"
-#include "src/draw/lv_draw_rect.h"
+LV_FONT_DECLARE(lv_font_montserrat_bold_48)
+LV_FONT_DECLARE(lv_font_fan_16)
+
+/* Font Awesome 6 Free solid "fan", U+F863 */
+#define UI_SYMBOL_FAN "\xEF\xA1\xA3"
 
 #define COLOR_BG 0x000000
 #define COLOR_TEXT 0xFFFFFF
@@ -44,8 +46,6 @@ typedef struct {
     lv_obj_t *watts;
     lv_obj_t *usage;
     lv_obj_t *rpm;
-    lv_obj_t *memory;
-    const char *memory_name;
     uint32_t accent;
 } ui_temp_screen_t;
 
@@ -105,55 +105,15 @@ static void style_arc(lv_obj_t *arc, int size, uint32_t color, uint32_t track)
     lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR);
 }
 
-static void fan_draw_cb(lv_event_t *e)
-{
-    lv_obj_t *obj = lv_event_get_target(e);
-    lv_layer_t *layer = lv_event_get_layer(e);
-    lv_area_t area;
-    lv_obj_get_coords(obj, &area);
-    const int cx = (area.x1 + area.x2) / 2;
-    const int cy = (area.y1 + area.y2) / 2;
-    static const int blade[][2] = {{6, -3}, {3, 6}, {-6, 3}, {-3, -6}};
-
-    for (int i = 0; i < 4; i++) {
-        lv_draw_line_dsc_t dsc;
-        lv_draw_line_dsc_init(&dsc);
-        dsc.color = lv_color_hex(COLOR_TEXT);
-        dsc.width = 2;
-        dsc.round_start = 1;
-        dsc.round_end = 1;
-        dsc.opa = LV_OPA_COVER;
-        dsc.p1.x = cx;
-        dsc.p1.y = cy;
-        dsc.p2.x = cx + blade[i][0];
-        dsc.p2.y = cy + blade[i][1];
-        lv_draw_line(layer, &dsc);
-    }
-
-    lv_draw_rect_dsc_t hub;
-    lv_draw_rect_dsc_init(&hub);
-    hub.bg_color = lv_color_hex(COLOR_TEXT);
-    hub.bg_opa = LV_OPA_COVER;
-    hub.radius = LV_RADIUS_CIRCLE;
-    lv_area_t hub_area = {cx - 1, cy - 1, cx + 1, cy + 1};
-    lv_draw_rect(layer, &hub, &hub_area);
-}
-
 static lv_obj_t *create_fan(lv_obj_t *parent)
 {
-    lv_obj_t *fan = lv_obj_create(parent);
-    lv_obj_remove_style_all(fan);
-    lv_obj_set_size(fan, 16, 16);
-    lv_obj_clear_flag(fan, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(fan, fan_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
-    return fan;
+    return create_text(parent, UI_SYMBOL_FAN, &lv_font_fan_16, COLOR_TEXT);
 }
 
 static void create_temp_screen(ui_temp_screen_t *ui, lv_display_t *disp, uint32_t accent,
-                               uint32_t track, const char *title, const char *memory_name)
+                               uint32_t track, const char *title)
 {
     ui->accent = accent;
-    ui->memory_name = memory_name;
     ui->screen = lv_display_get_screen_active(disp);
     style_screen_black(ui->screen);
 
@@ -161,6 +121,7 @@ static void create_temp_screen(ui_temp_screen_t *ui, lv_display_t *disp, uint32_
     style_arc(ui->usage_arc, USAGE_ARC_SIZE, accent, track);
     ui->arc = lv_arc_create(ui->screen);
     style_arc(ui->arc, TEMP_ARC_SIZE, COLOR_CYAN, COLOR_TEMP_TRACK);
+    lv_obj_add_flag(ui->arc, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *col = make_flex(ui->screen, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(col, 0, 0);
@@ -168,13 +129,13 @@ static void create_temp_screen(ui_temp_screen_t *ui, lv_display_t *disp, uint32_
 
     lv_obj_t *title_row = make_flex(col, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(title_row, 4, 0);
-    lv_obj_set_style_margin_bottom(title_row, 1, 0);
+    lv_obj_set_style_margin_bottom(title_row, 10, 0);
     ui->warn = create_text(title_row, LV_SYMBOL_WARNING, &lv_font_montserrat_12, accent);
     lv_obj_add_flag(ui->warn, LV_OBJ_FLAG_HIDDEN);
     ui->status = create_text(title_row, title, &lv_font_montserrat_bold_12, accent);
     lv_obj_set_style_text_letter_space(ui->status, 1, 0);
 
-    ui->value = create_text(col, "—", &lv_font_montserrat_bold_64, COLOR_TEXT);
+    ui->value = create_text(col, "—", &lv_font_montserrat_bold_48, COLOR_TEXT);
     lv_obj_set_style_margin_bottom(ui->value, 2, 0);
 
     lv_obj_t *clock_row = make_flex(col, LV_FLEX_FLOW_ROW);
@@ -191,11 +152,6 @@ static void create_temp_screen(ui_temp_screen_t *ui, lv_display_t *disp, uint32_
     ui->usage = create_text(load_row, "—%", &lv_font_montserrat_14, accent);
     create_fan(load_row);
     ui->rpm = create_text(load_row, "—", &lv_font_montserrat_14, COLOR_TEXT);
-
-    char memory[24];
-    snprintf(memory, sizeof(memory), "%s — / — GB", memory_name);
-    ui->memory = create_text(col, memory, &lv_font_montserrat_10, COLOR_CYAN);
-    lv_obj_add_flag(ui->memory, LV_OBJ_FLAG_HIDDEN);
 }
 
 static int clamp_pct(float value, float max_value)
@@ -220,9 +176,6 @@ static void show_placeholder(ui_temp_screen_t *ui)
     lv_label_set_text(ui->watts, "— W");
     lv_label_set_text(ui->usage, "—%");
     lv_label_set_text(ui->rpm, "—");
-    char memory[24];
-    snprintf(memory, sizeof(memory), "%s — / — GB", ui->memory_name);
-    lv_label_set_text(ui->memory, memory);
     set_text_color(ui->status, COLOR_TEXT_DIM);
     set_text_color(ui->value, COLOR_TEXT_DIM);
     set_text_color(ui->usage, COLOR_TEXT_DIM);
@@ -263,11 +216,6 @@ static void update_temp_screen(ui_temp_screen_t *ui, const metrics_temp_t *temp,
         lv_label_set_text(ui->rpm, rpm);
     }
 
-    char memory[32];
-    snprintf(memory, sizeof(memory), "%s %.1f / %.0f GB", ui->memory_name, temp->memory_used_gb,
-             temp->memory_total_gb);
-    lv_label_set_text(ui->memory, memory);
-
     lv_arc_set_value(ui->arc, clamp_pct(temp->temp_c, temp_max));
     lv_arc_set_value(ui->usage_arc, clamp_pct(temp->usage_pct, 100.0f));
 
@@ -293,7 +241,6 @@ static void update_temp_screen(ui_temp_screen_t *ui, const metrics_temp_t *temp,
     set_text_color(ui->status, label_color);
     set_text_color(ui->value, value_color);
     set_text_color(ui->usage, ui->accent);
-    set_text_color(ui->memory, COLOR_CYAN);
     if (warn) {
         set_text_color(ui->warn, label_color);
         lv_obj_remove_flag(ui->warn, LV_OBJ_FLAG_HIDDEN);
@@ -305,10 +252,10 @@ static void update_temp_screen(ui_temp_screen_t *ui, const metrics_temp_t *temp,
 void ui_watch_create(lv_display_t *disp_cpu, lv_display_t *disp_gpu)
 {
     lv_display_set_default(disp_cpu);
-    create_temp_screen(&s_cpu, disp_cpu, COLOR_USAGE_CPU, COLOR_TRACK_CPU, "CPU", "RAM");
+    create_temp_screen(&s_cpu, disp_cpu, COLOR_USAGE_CPU, COLOR_TRACK_CPU, "CPU");
 
     lv_display_set_default(disp_gpu);
-    create_temp_screen(&s_gpu, disp_gpu, COLOR_USAGE_GPU, COLOR_TRACK_GPU, "GPU", "VRAM");
+    create_temp_screen(&s_gpu, disp_gpu, COLOR_USAGE_GPU, COLOR_TRACK_GPU, "GPU");
     ESP_LOGI(TAG, "Watch UI created");
 }
 
