@@ -1,19 +1,27 @@
 <script lang="ts">
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
-  import { monitor, type PortInfo, type Reading } from "./monitor.svelte";
+  import { monitor, type FirmwareInfo, type PortInfo, type Reading } from "./monitor.svelte";
 
-  let { open = $bindable(false) }: { open: boolean } = $props();
+  type Tab = "connection" | "device" | "sensors" | "console";
+  const TABS: [Tab, string][] = [
+    ["connection", "Connection"],
+    ["device", "Device"],
+    ["sensors", "Sensors"],
+    ["console", "Console"],
+  ];
 
-  type Tab = "connection" | "sensors" | "console";
-  let tab = $state<Tab>("connection");
+  let { open = $bindable(false), tab = $bindable("connection") }: { open: boolean; tab?: Tab } = $props();
+
   let ports = $state<PortInfo[]>([]);
+  let firmware = $state<FirmwareInfo | null>(null);
+  let confirming = $state(false);
   let readings = $state<Reading[]>([]);
   let consoleEl = $state<HTMLElement>();
   let follow = $state(true);
 
   $effect(() => {
-    if (!open || tab !== "connection") return;
+    if (!open || (tab !== "connection" && tab !== "device")) return;
     const load = () => monitor.listPorts().then((p) => (ports = p));
     load();
     const id = setInterval(load, 2000);
@@ -36,6 +44,32 @@
   });
 
   $effect(() => {
+    if (!open || tab !== "device") return;
+    let alive = true;
+    monitor.firmwareInfo().then((f) => alive && (firmware = f));
+    return () => {
+      alive = false;
+      confirming = false;
+    };
+  });
+
+  // The port esptool will use: the pinned one, else the only Espressif device plugged in.
+  const boards = $derived(ports.filter((p) => p.is_board));
+  const target = $derived(monitor.portSetting ?? (boards.length === 1 ? boards[0].name : null));
+  const busy = $derived(monitor.job !== "idle");
+
+  async function identify() {
+    await monitor.identify(monitor.portSetting);
+    firmware = await monitor.firmwareInfo();
+  }
+
+  async function flash() {
+    confirming = false;
+    await monitor.flash(monitor.portSetting);
+    firmware = await monitor.firmwareInfo();
+  }
+
+  $effect(() => {
     void monitor.logs.length;
     if (follow && consoleEl) queueMicrotask(() => consoleEl && (consoleEl.scrollTop = consoleEl.scrollHeight));
   });
@@ -56,6 +90,7 @@
   }
 
   const hex = (n: number) => n.toString(16).padStart(4, "0");
+  const kb = (n: number) => `${Math.round(n / 1024)} KB`;
   const fmt = (r: Reading) => (r.unit === "RPM" || r.unit === "%" ? r.value.toFixed(0) : r.value.toFixed(1));
 </script>
 
@@ -65,10 +100,10 @@
   <button class="scrim" transition:fade={{ duration: 200 }} onclick={() => (open = false)} aria-label="Close settings"></button>
   <aside class="drawer" transition:fly={{ x: 40, duration: 320, easing: cubicOut, opacity: 0 }} aria-label="Settings">
     <nav>
-      {#each [["connection", "Connection"], ["sensors", "Sensors"], ["console", "Console"]] as [key, label] (key)}
-        <button class:active={tab === key} onclick={() => (tab = key as Tab)}>{label}</button>
+      {#each TABS as [key, label] (key)}
+        <button class:active={tab === key} onclick={() => (tab = key)}>{label}</button>
       {/each}
-      <span class="indicator" style:--i={["connection", "sensors", "console"].indexOf(tab)}></span>
+      <span class="indicator" style:--i={TABS.findIndex(([key]) => key === tab)}></span>
     </nav>
 
     <div class="content">
@@ -115,6 +150,93 @@
             <div><dt>Format</dt><dd>JSON line · v1</dd></div>
             <div><dt>Stale after</dt><dd>3 s</dd></div>
           </dl>
+        </section>
+      {:else if tab === "device"}
+        <section>
+          <h3>Board</h3>
+          {#if target}
+            <p class="hint">
+              esptool talks to the ROM bootloader, so this works even on a blank board. Streaming pauses while it runs and the board
+              reboots afterwards.
+            </p>
+            <div class="target">
+              <span class="chipdot" class:found={monitor.chip?.port === target}></span>
+              <span class="pname">{target}</span>
+              <button class="btn" disabled={busy || !firmware} onclick={() => identify()}>
+                {monitor.job === "identify" ? "Reading…" : "Identify"}
+              </button>
+            </div>
+          {:else if boards.length > 1}
+            <p class="hint">More than one Espressif device is plugged in. Pin the DualEye's port in Connection first.</p>
+          {:else}
+            <p class="empty">No ESP32-S3 found on USB. Plug the DualEye in with a data cable.</p>
+          {/if}
+          {#if monitor.chip && monitor.chip.port === target}
+            <dl class="facts chipinfo">
+              <div class="wide"><dt>Chip</dt><dd>{monitor.chip.chip ?? "—"}</dd></div>
+              <div><dt>Flash</dt><dd>{monitor.chip.flash_size ?? "—"}</dd></div>
+              <div><dt>Crystal</dt><dd>{monitor.chip.crystal ?? "—"}</dd></div>
+              <div class="wide"><dt>MAC</dt><dd>{monitor.chip.mac ?? "—"}</dd></div>
+              {#if monitor.chip.features}<div class="wide"><dt>Features</dt><dd class="small">{monitor.chip.features}</dd></div>{/if}
+            </dl>
+          {/if}
+        </section>
+
+        <section>
+          <h3>Firmware</h3>
+          {#if !firmware}
+            <p class="empty">Checking esptool…</p>
+          {:else}
+            <dl class="facts">
+              <div><dt>Image</dt><dd>merged-binary.bin</dd></div>
+              <div><dt>Size</dt><dd>{kb(firmware.size)} · at 0x0</dd></div>
+              <div class="wide">
+                <dt>esptool</dt>
+                {#if firmware.esptool}
+                  <dd>v{firmware.esptool.version} <span class="muted">ready</span></dd>
+                {:else}
+                  <dd class="small">Set up automatically on first use: about 50 MB download, needs internet once.</dd>
+                {/if}
+              </div>
+            </dl>
+            {#if monitor.setup}
+              <div class="progress" class:indeterminate={monitor.setup.percent === null}>
+                <span style:width="{monitor.setup.percent ?? 30}%"></span>
+              </div>
+              <p class="hint setup">Preparing esptool · {monitor.setup.message}{monitor.setup.percent !== null ? ` ${Math.round(monitor.setup.percent)}%` : ""}</p>
+            {:else if monitor.job === "flash"}
+              <div class="progress" role="progressbar" aria-valuenow={Math.round(monitor.flashPercent)} aria-valuemin={0} aria-valuemax={100}>
+                <span style:width="{monitor.flashPercent}%"></span>
+              </div>
+              <p class="hint">Writing {Math.round(monitor.flashPercent)}% · don't unplug the board.</p>
+            {:else if confirming}
+              <p class="hint">This replaces the firmware on {target}. Continue?</p>
+              <div class="actions">
+                <button class="btn primary" onclick={flash}>Flash now</button>
+                <button class="btn" onclick={() => (confirming = false)}>Cancel</button>
+              </div>
+            {:else}
+              <div class="actions">
+                <button class="btn primary" disabled={busy || !target} onclick={() => (confirming = true)}>Flash firmware</button>
+              </div>
+            {/if}
+          {/if}
+          {#if monitor.jobError}
+            <section class="alert error">
+              <h3>esptool failed</h3>
+              <p class="mono">{monitor.jobError}</p>
+            </section>
+          {:else if monitor.flashedAt && monitor.job === "idle"}
+            <p class="ok">Flashed and verified. The board is rebooting into the new firmware.</p>
+          {/if}
+          {#if monitor.jobLog.length}
+            <details open={busy || !!monitor.jobError}>
+              <summary>esptool output</summary>
+              <div class="console joblog">
+                {#each monitor.jobLog as line, i (i)}<div class="log">{line}</div>{/each}
+              </div>
+            </details>
+          {/if}
         </section>
       {:else if tab === "sensors"}
         <p class="hint">Every raw value the host can read. The board gets the CPU average, the first GPU and the fastest fan of each kind.</p>
@@ -175,7 +297,7 @@
   nav {
     position: relative;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     margin: 14px;
     padding: 3px;
     border-radius: 12px;
@@ -201,7 +323,7 @@
     top: 3px;
     bottom: 3px;
     left: 3px;
-    width: calc((100% - 6px) / 3);
+    width: calc((100% - 6px) / 4);
     border-radius: 9px;
     background: rgba(255, 255, 255, 0.08);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
@@ -340,6 +462,123 @@
   .facts dd {
     margin: 0;
     font: 550 12.5px/1 var(--mono);
+  }
+
+  .facts .wide {
+    grid-column: 1 / -1;
+  }
+  .facts dd.small {
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .chipinfo {
+    margin-top: 10px;
+  }
+  .muted {
+    color: var(--faint);
+    font-size: 10.5px;
+    margin-left: 6px;
+    word-break: break-all;
+  }
+
+  .target {
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 8px 8px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .chipdot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--faint);
+  }
+  .chipdot.found {
+    background: #5ee38a;
+    box-shadow: 0 0 8px #5ee38a;
+  }
+  .actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .btn {
+    height: 30px;
+    padding: 0 14px;
+    border-radius: 9px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
+    font: 550 12px/1 var(--sans);
+    cursor: pointer;
+    transition: background 200ms;
+  }
+  .btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.09);
+  }
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .btn.primary {
+    border-color: color-mix(in srgb, var(--cpu) 45%, transparent);
+    background: color-mix(in srgb, var(--cpu) 14%, transparent);
+  }
+  .btn.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--cpu) 22%, transparent);
+  }
+  .progress {
+    height: 6px;
+    margin: 14px 0 8px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.06);
+    overflow: hidden;
+  }
+  .progress span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--cpu);
+    box-shadow: 0 0 10px var(--cpu);
+    transition: width 200ms linear;
+  }
+  .progress.indeterminate span {
+    animation: sweep 1.2s ease-in-out infinite;
+  }
+  @keyframes sweep {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(340%);
+    }
+  }
+  .hint.setup {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ok {
+    margin: 12px 0 0;
+    font: 450 12.5px/1.5 var(--sans);
+    color: #5ee38a;
+  }
+  details {
+    margin-top: 14px;
+  }
+  summary {
+    font: 500 11px/1 var(--sans);
+    color: var(--dim);
+    cursor: pointer;
+    margin-bottom: 8px;
+  }
+  .joblog {
+    max-height: 180px;
+    margin: 0;
   }
 
   .group ul {

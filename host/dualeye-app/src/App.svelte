@@ -11,9 +11,10 @@
   let settings = $state(false);
   let pixels = $state(false);
   let heroW = $state(0);
-  let heroH = $state(0);
+  let winH = $state(0);
 
-  const size = $derived(Math.round(Math.max(150, Math.min(400, heroW / 2.75, heroH / 1.42))));
+  // A compact mirror: the board keeps its proportions but leaves the room to the charts.
+  const size = $derived(Math.round(Math.max(130, Math.min(210, heroW / 3.4, winH * 0.25))));
   const board = $derived(monitor.boardState);
   const shown = $derived(monitor.shown);
 
@@ -41,11 +42,13 @@
   });
 </script>
 
+<svelte:window bind:innerHeight={winH} />
+
 <div class="app">
   <div class="backdrop" aria-hidden="true"></div>
   <TitleBar onSettings={() => (settings = true)} />
 
-  <section class="hero" bind:clientWidth={heroW} bind:clientHeight={heroH}>
+  <section class="hero" bind:clientWidth={heroW}>
     <div class="board" class:off={board === "off"}>
       <Board cpu={screen("cpu")} gpu={screen("gpu")} {board} {size} cpuGlow={glow("cpu")} gpuGlow={glow("gpu")} {pixels} />
     </div>
@@ -82,7 +85,7 @@
     position: relative;
     height: 100vh;
     display: grid;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: auto auto minmax(0, 1fr);
     overflow: hidden;
   }
 
@@ -118,7 +121,8 @@
     position: relative;
     display: grid;
     place-items: center;
-    min-height: 0;
+    /* Room for the toggle above the board and the caption below it. */
+    padding: 34px 0 30px;
     /* Clip the screen glow without making the hero scrollable. */
     contain: paint;
   }
@@ -239,7 +243,7 @@
     grid-template-columns: 1fr 1fr;
     gap: 14px;
     padding: 0 18px 18px;
-    height: clamp(210px, 30vh, 270px);
+    min-height: 0;
   }
   @media (max-width: 1040px) {
     .cards {
@@ -248,7 +252,7 @@
     }
     .app {
       overflow-y: auto;
-      grid-template-rows: auto minmax(420px, 1fr) auto;
+      grid-template-rows: auto auto auto;
     }
   }
 </style>

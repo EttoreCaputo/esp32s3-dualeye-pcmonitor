@@ -3,14 +3,17 @@
 //! [`Collector`] reads CPU, GPU and fan sensors straight from the OS (no
 //! CoolerControl or other daemon), [`Snapshot`] is the JSON line the firmware
 //! parses, and [`Bridge`] ties them to the board's USB serial port on a
-//! background thread. The CLI and a Tauri app are both thin shells over this.
+//! background thread, and [`Esptool`] identifies and flashes the board. The CLI
+//! and a Tauri app are both thin shells over this.
 
 pub mod bridge;
+pub mod flasher;
 pub mod sensors;
 pub mod serial;
 pub mod snapshot;
 
 pub use bridge::{Bridge, BridgeConfig, BridgeEvent};
+pub use flasher::{ChipInfo, Esptool, FlashEvent};
 pub use sensors::{Collector, Reading};
 pub use serial::PortInfo;
 pub use snapshot::{DeviceMetrics, Fan, Snapshot};

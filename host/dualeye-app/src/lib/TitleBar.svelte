@@ -6,6 +6,9 @@
 
   const pill = $derived.by(() => {
     const port = monitor.port ?? "";
+    if (monitor.setup) return { tone: "busy", text: "Preparing esptool", detail: monitor.setup.message };
+    if (monitor.job === "flash") return { tone: "busy", text: `Flashing ${Math.round(monitor.flashPercent)}%`, detail: "esptool" };
+    if (monitor.job === "identify") return { tone: "busy", text: "Identifying", detail: "esptool" };
     switch (monitor.boardState) {
       case "live":
         return { tone: "live", text: "Live", detail: port };

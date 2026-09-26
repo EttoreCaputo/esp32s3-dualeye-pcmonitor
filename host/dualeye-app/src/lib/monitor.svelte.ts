@@ -12,6 +12,23 @@ export type Fan = { id: string; rpm: number };
 export type Snapshot = { v: number; ts: number; cpu?: Metrics; gpu?: Metrics; fans?: Fan[] };
 export type PortInfo = { name: string; vid: number; pid: number; product: string | null; is_board: boolean };
 export type Reading = { source: string; label: string; value: number; unit: string };
+export type Esptool = { python: string; version: string };
+export type FirmwareInfo = { size: number; esptool: Esptool | null };
+export type ChipInfo = {
+  port: string;
+  chip: string | null;
+  features: string | null;
+  crystal: string | null;
+  mac: string | null;
+  flash_size: string | null;
+};
+/** What esptool is doing with the board, if anything. */
+export type DeviceJob = "idle" | "identify" | "flash";
+
+type FlashEvent =
+  | { kind: "log"; line: string }
+  | { kind: "progress"; percent: number }
+  | { kind: "setup"; message: string; percent: number | null };
 
 type BridgeEvent =
   | { kind: "waiting"; reason: string }
@@ -62,6 +79,16 @@ class Monitor {
   history = $state<Sample[]>([]);
   logs = $state<string[]>([]);
 
+  job = $state<DeviceJob>("idle");
+  /** Output of the last esptool run. */
+  jobLog = $state<string[]>([]);
+  jobError = $state("");
+  flashPercent = $state(0);
+  flashedAt = $state(0);
+  /** First-use setup of esptool (Python download, virtualenv, pip), while it runs. */
+  setup = $state<{ message: string; percent: number | null } | null>(null);
+  chip = $state<ChipInfo | null>(null);
+
   boardState: BoardState = $derived.by(() => {
     if (this.link !== "connected") return "off";
     if (this.now - this.connectedAt < BOOT_MS) return "boot";
@@ -81,6 +108,7 @@ class Monitor {
 
   async #connect() {
     await listen<BridgeEvent>("bridge", (e) => this.#apply(e.payload));
+    await listen<FlashEvent>("flash", (e) => this.#applyFlash(e.payload));
     const s = await invoke<Status>("status");
     const now = Date.now();
     this.link = s.link;
@@ -126,6 +154,58 @@ class Monitor {
         this.message = e.reason;
         this.permissionDenied = e.permission_denied;
         break;
+    }
+  }
+
+  #applyFlash(e: FlashEvent) {
+    if (e.kind === "progress") {
+      this.setup = null;
+      this.flashPercent = e.percent;
+    } else if (e.kind === "setup") {
+      this.setup = { message: e.message, percent: e.percent };
+      // Keep the setup's own output (venv, pip) so a failure can be read back.
+      if (e.percent === null) this.jobLog.push(e.message);
+    } else {
+      this.setup = null;
+      this.jobLog.push(e.line);
+    }
+  }
+
+  async firmwareInfo(): Promise<FirmwareInfo> {
+    if (this.preview) return { size: 559360, esptool: previewEsptool };
+    return invoke<FirmwareInfo>("firmware_info");
+  }
+
+  /** Ask the chip who it is (resets the board). `port` null picks the detected board. */
+  async identify(port: string | null) {
+    await this.#runJob("identify", async () => {
+      this.chip = this.preview ? await previewIdentify((e) => this.#applyFlash(e)) : await invoke<ChipInfo>("identify_board", { port });
+    });
+  }
+
+  /** Write the bundled firmware and reboot the board into it. */
+  async flash(port: string | null) {
+    this.flashPercent = 0;
+    await this.#runJob("flash", async () => {
+      if (this.preview) await previewFlash((e) => this.#applyFlash(e));
+      else await invoke("flash_board", { port });
+      this.flashedAt = Date.now();
+    });
+  }
+
+  async #runJob(job: DeviceJob, run: () => Promise<void>) {
+    if (this.job !== "idle") return;
+    this.job = job;
+    this.jobLog = [];
+    this.jobError = "";
+    this.flashedAt = 0;
+    try {
+      await run();
+    } catch (err) {
+      this.jobError = String(err);
+    } finally {
+      this.job = "idle";
+      this.setup = null;
     }
   }
 
@@ -204,6 +284,56 @@ function startPreviewFeed(emit: (e: BridgeEvent) => void) {
       emit({ kind: "board_log", line });
     }, 1000);
   }, 2600);
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// The preview walks through the first-use setup once, like a fresh install.
+let previewEsptool: Esptool | null = null;
+
+async function previewSetup(emit: (e: FlashEvent) => void) {
+  if (previewEsptool) return;
+  for (let p = 0; p <= 100; p += 5) {
+    emit({ kind: "setup", message: "Downloading Python 3.12.14", percent: p });
+    await sleep(60);
+  }
+  for (const message of ["Unpacking Python", "Creating the virtual environment", "Collecting esptool>=5.1,<6", "Successfully installed esptool-5.4.0"]) {
+    emit({ kind: "setup", message, percent: null });
+    await sleep(500);
+  }
+  previewEsptool = { python: "~/.local/share/com.dualeye.monitor/esptool/venv/bin/python", version: "5.4.0" };
+}
+
+async function previewIdentify(emit: (e: FlashEvent) => void): Promise<ChipInfo> {
+  await previewSetup(emit);
+  for (const line of ["esptool v5.4.0", "Connected to ESP32-S3 on /dev/ttyACM0:", "Chip type: ESP32-S3 (QFN56) (revision v0.2)"]) {
+    emit({ kind: "log", line });
+    await sleep(250);
+  }
+  return {
+    port: "/dev/ttyACM0",
+    chip: "ESP32-S3 (QFN56) (revision v0.2)",
+    features: "Wi-Fi, BT 5 (LE), Dual Core + LP Core, 240MHz, Embedded PSRAM 8MB (AP_3v3)",
+    crystal: "40MHz",
+    mac: "dc:da:0c:2a:91:f4",
+    flash_size: "16MB",
+  };
+}
+
+async function previewFlash(emit: (e: FlashEvent) => void) {
+  await previewSetup(emit);
+  for (const line of ["esptool v5.4.0", "Connected to ESP32-S3 on /dev/ttyACM0:", "Flash will be erased from 0x00000000 to 0x00088fff..."]) {
+    emit({ kind: "log", line });
+    await sleep(300);
+  }
+  for (let p = 0; p <= 100; p += 4) {
+    emit({ kind: "progress", percent: p });
+    await sleep(120);
+  }
+  for (const line of ["Wrote 559360 bytes (321722 compressed) at 0x00000000 in 4.1 seconds.", "Hash of data verified.", "Hard resetting via RTS pin..."]) {
+    emit({ kind: "log", line });
+    await sleep(200);
+  }
 }
 
 function previewReadings(s: Snapshot | null): Reading[] {

@@ -13,10 +13,10 @@ name = "dualeye-app"
 path = "src/main.rs"
 
 [dependencies]
-dualeye-core = { version = "0.1.0", path = "../../dualeye-core" }
+dualeye-core = { version = "0.1.0", path = "../../dualeye-core", features = ["provision"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tauri = { version = "2.11.6", features = ["tray-icon"] }
 
 [build-dependencies]
-tauri-build = "2.6.3"
+tauri-build = { version = "2.6.3", features = [] }

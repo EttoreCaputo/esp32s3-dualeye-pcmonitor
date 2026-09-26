@@ -3,14 +3,20 @@
 //! freshly loaded webview can catch up) and forwarded to the UI as `bridge`.
 //!
 //! Closing the window only hides it; the tray icon brings it back or quits.
+//!
+//! Identifying and flashing the board go through esptool, which the app sets
+//! up by itself on first use (Python + virtualenv in its data folder); the
+//! bridge is stopped meanwhile so esptool can own the port, then started again.
 
 use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use dualeye_core::{Bridge, BridgeConfig, BridgeEvent, Collector, PortInfo, Reading, Snapshot, serial};
+use dualeye_core::flasher::setup;
+use dualeye_core::{Bridge, BridgeConfig, BridgeEvent, ChipInfo, Collector, Esptool, FlashEvent, PortInfo, Reading, Snapshot, serial};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -18,6 +24,8 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 const LOG_LINES: usize = 300;
 const TRAY_ID: &str = "main";
+/// The image in the repository's `build/` folder, shipped inside the app.
+const FIRMWARE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../build/merged-binary.bin"));
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 struct Settings {
@@ -79,6 +87,10 @@ struct AppState {
     settings_path: Option<PathBuf>,
     /// Separate from the bridge's own collector, for the sensor list.
     collector: Mutex<Option<Collector>>,
+    /// esptool holds the port (identify or flash in progress).
+    device_busy: AtomicBool,
+    /// Where esptool's Python and virtualenv live.
+    esptool_dir: PathBuf,
 }
 
 impl AppState {
@@ -135,6 +147,10 @@ async fn set_port(app: AppHandle, port: Option<String>) -> Result<(), String> {
         let state = app.state::<AppState>();
         state.settings.lock().unwrap().port = port.clone();
         state.save_settings();
+        if state.device_busy.load(Ordering::SeqCst) {
+            // The bridge comes back with the new setting once esptool is done.
+            return;
+        }
         // Dropping the old bridge joins its thread and releases the port.
         let old = state.bridge.lock().unwrap().take();
         drop(old);
@@ -156,6 +172,80 @@ async fn readings(app: AppHandle) -> Result<Vec<Reading>, String> {
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct FirmwareInfo {
+    size: usize,
+    /// `None` until esptool has been set up (done on first identify/flash).
+    esptool: Option<Esptool>,
+}
+
+#[tauri::command]
+async fn firmware_info(app: AppHandle) -> Result<FirmwareInfo, String> {
+    let dir = app.state::<AppState>().esptool_dir.clone();
+    let esptool = tauri::async_runtime::spawn_blocking(move || Esptool::installed(&dir)).await.map_err(|e| e.to_string())?;
+    Ok(FirmwareInfo { size: FIRMWARE.len(), esptool })
+}
+
+#[tauri::command]
+async fn identify_board(app: AppHandle, port: Option<String>) -> Result<ChipInfo, String> {
+    with_device(app, port, |app, tool, port| tool.chip_info(port, |e| emit_flash(app, e))).await
+}
+
+#[tauri::command]
+async fn flash_board(app: AppHandle, port: Option<String>) -> Result<(), String> {
+    with_device(app, port, |app, tool, port| {
+        let path = std::env::temp_dir().join("dualeye-merged-binary.bin");
+        fs::write(&path, FIRMWARE)?;
+        let result = tool.flash(port, &path, |e| emit_flash(app, e));
+        let _ = fs::remove_file(&path);
+        result
+    })
+    .await
+}
+
+fn emit_flash(app: &AppHandle, event: FlashEvent) {
+    let _ = app.emit("flash", &event);
+}
+
+/// Set esptool up if needed, stop the bridge, hand the port to esptool, then
+/// start the bridge again.
+async fn with_device<T: Send + 'static>(
+    app: AppHandle,
+    port: Option<String>,
+    job: impl FnOnce(&AppHandle, &Esptool, &str) -> std::io::Result<T> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        if state.device_busy.swap(true, Ordering::SeqCst) {
+            return Err("esptool is already talking to the board".to_string());
+        }
+        let result = (|| -> Result<T, String> {
+            // Streaming carries on while Python and esptool download.
+            let tool = setup::ensure(&state.esptool_dir, |e| emit_flash(&app, e)).map_err(|e| format!("setting up esptool: {e}"))?;
+            let port = port
+                .or_else(|| state.settings.lock().unwrap().port.clone())
+                .or_else(serial::detect_board)
+                .ok_or("no single DualEye found on USB: pick its port")?;
+            let old = state.bridge.lock().unwrap().take();
+            drop(old);
+            let paused = BridgeEvent::Waiting { reason: "esptool is using the port".into() };
+            let mut link = Link { kind: "searching", ..Default::default() };
+            link.record(&paused);
+            *state.link.lock().unwrap() = link;
+            let _ = app.emit("bridge", &paused);
+            let result = job(&app, &tool, &port).map_err(|e| e.to_string());
+            let bridge = start_bridge(&app, state.settings.lock().unwrap().port.clone());
+            *state.bridge.lock().unwrap() = Some(bridge);
+            result
+        })();
+        state.device_busy.store(false, Ordering::SeqCst);
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|result| result)
 }
 
 fn start_bridge(app: &AppHandle, port: Option<String>) -> Bridge {
@@ -216,6 +306,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let settings_path = app.path().app_config_dir().ok().map(|d| d.join("settings.json"));
+            let esptool_dir = app.path().app_local_data_dir()?.join("esptool");
             let settings: Settings = settings_path
                 .as_ref()
                 .and_then(|p| fs::read_to_string(p).ok())
@@ -228,6 +319,8 @@ pub fn run() {
                 settings: Mutex::new(settings),
                 settings_path,
                 collector: Mutex::new(None),
+                device_busy: AtomicBool::new(false),
+                esptool_dir,
             });
             let handle = app.handle();
             let bridge = start_bridge(handle, port);
@@ -244,7 +337,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![status, list_ports, set_port, readings])
+        .invoke_handler(tauri::generate_handler![status, list_ports, set_port, readings, firmware_info, identify_board, flash_board])
         .build(tauri::generate_context!())
         .expect("failed to build the DualEye app")
         .run(|app, event| {
