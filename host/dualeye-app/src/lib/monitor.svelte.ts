@@ -6,10 +6,13 @@
 
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { DEFAULT_FACES, type Faces } from "./firmware";
 
-export type Metrics = { temp_c?: number; load_pct?: number; clock_mhz?: number; power_w?: number };
+/** In MiB. System RAM under `cpu`, VRAM under `gpu`. */
+export type Memory = { used_mb: number; total_mb: number };
+export type Metrics = { temp_c?: number; load_pct?: number; clock_mhz?: number; power_w?: number; mem?: Memory };
 export type Fan = { id: string; rpm: number };
-export type Snapshot = { v: number; ts: number; cpu?: Metrics; gpu?: Metrics; fans?: Fan[] };
+export type Snapshot = { v: number; ts: number; cpu?: Metrics; gpu?: Metrics; fans?: Fan[]; face?: Faces };
 export type PortInfo = { name: string; vid: number; pid: number; product: string | null; is_board: boolean };
 export type Reading = { source: string; label: string; value: number; unit: string };
 export type Esptool = { python: string; version: string };
@@ -47,6 +50,7 @@ type Status = {
   connected_age_ms: number | null;
   logs: string[];
   port_setting: string | null;
+  faces: Faces;
 };
 
 export type Link = "searching" | "connected" | "offline";
@@ -78,6 +82,8 @@ class Monitor {
   now = $state(Date.now());
   history = $state<Sample[]>([]);
   logs = $state<string[]>([]);
+  /** Faces picked in the app; the board switches with the next line it gets. */
+  faces = $state<Faces>({ ...DEFAULT_FACES });
 
   job = $state<DeviceJob>("idle");
   /** Output of the last esptool run. */
@@ -102,7 +108,7 @@ class Monitor {
     if (this.#started) return;
     this.#started = true;
     setInterval(() => (this.now = Date.now()), 250);
-    if (this.preview) startPreviewFeed((e) => this.#apply(e));
+    if (this.preview) startPreviewFeed((e) => this.#apply(e), () => this.faces);
     else void this.#connect();
   }
 
@@ -114,6 +120,7 @@ class Monitor {
     this.link = s.link;
     this.port = s.port;
     this.portSetting = s.port_setting;
+    this.faces = s.faces;
     this.message = s.message ?? "";
     this.last = s.last;
     this.shown = s.sent;
@@ -224,6 +231,11 @@ class Monitor {
     if (!this.preview) await invoke("set_port", { port });
   }
 
+  async setFaces(faces: Faces) {
+    this.faces = faces;
+    if (!this.preview) await invoke("set_faces", { faces });
+  }
+
   async readings(): Promise<Reading[]> {
     if (this.preview) return previewReadings(this.last);
     return invoke<Reading[]>("readings");
@@ -238,7 +250,7 @@ export function fanRpm(s: Snapshot | null, id: string): number | undefined {
 
 // ── Preview feed ────────────────────────────────────────────────────────────
 
-function startPreviewFeed(emit: (e: BridgeEvent) => void) {
+function startPreviewFeed(emit: (e: BridgeEvent) => void, faces: () => Faces) {
   const boot = [
     "ESP-ROM:esp32s3-20210327",
     "I (24) boot: ESP-IDF v6.1 2nd stage bootloader",
@@ -267,17 +279,20 @@ function startPreviewFeed(emit: (e: BridgeEvent) => void) {
           load_pct: r1(cpuLoad),
           clock_mhz: Math.round(900 + cpuLoad * 42 + Math.random() * 120),
           power_w: r1(9 + cpuLoad * 1.6),
+          mem: { used_mb: Math.round(12400 + cpuLoad * 60 + wave(t, 90) * 900), total_mb: 31744 },
         },
         gpu: {
           temp_c: r1(34 + gpuLoad * 0.5),
           load_pct: r1(gpuLoad),
           clock_mhz: gpuLoad > 8 ? Math.round(1400 + gpuLoad * 5) : 210,
           power_w: r1(21 + gpuLoad * 3.3),
+          mem: { used_mb: Math.round(1100 + gpuLoad * 190), total_mb: 24576 },
         },
         fans: [
           { id: "cpu", rpm: Math.round(3780 + cpuLoad * 9 + Math.random() * 40) },
           { id: "gpu", rpm: gpuLoad > 25 ? Math.round(900 + gpuLoad * 14) : 0 },
         ],
+        face: { ...faces() },
       };
       emit({ kind: "snapshot", snapshot, sent: true });
       const line = `I (${Math.round(t * 1000 + 2000)}) metrics_io: cpu ${Math.round(snapshot.cpu!.temp_c!)}C gpu ${Math.round(snapshot.gpu!.temp_c!)}C`;
@@ -354,6 +369,10 @@ function previewReadings(s: Snapshot | null): Reading[] {
     { source: "nvml:0 NVIDIA GeForce RTX 3090", label: "GPU Temp", value: g.temp_c ?? 34, unit: "°C" },
     { source: "nvml:0 NVIDIA GeForce RTX 3090", label: "GPU Load", value: g.load_pct ?? 0, unit: "%" },
     { source: "nvml:0 NVIDIA GeForce RTX 3090", label: "Power", value: g.power_w ?? 21, unit: "W" },
+    { source: "nvml:0 NVIDIA GeForce RTX 3090", label: "VRAM used", value: g.mem?.used_mb ?? 1100, unit: "MB" },
+    { source: "nvml:0 NVIDIA GeForce RTX 3090", label: "VRAM total", value: 24576, unit: "MB" },
+    { source: "memory", label: "RAM used", value: c.mem?.used_mb ?? 12400, unit: "MB" },
+    { source: "memory", label: "RAM total", value: 31744, unit: "MB" },
   );
   return out;
 }

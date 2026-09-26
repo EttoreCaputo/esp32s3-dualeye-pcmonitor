@@ -1,11 +1,14 @@
 <script lang="ts">
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
-  import { monitor, type FirmwareInfo, type PortInfo, type Reading } from "./monitor.svelte";
+  import Eye from "./Eye.svelte";
+  import { DEVICES, FACES, screenFor, type DeviceId, type Face } from "./firmware";
+  import { fanRpm, monitor, type FirmwareInfo, type PortInfo, type Reading } from "./monitor.svelte";
 
-  type Tab = "connection" | "device" | "sensors" | "console";
+  type Tab = "connection" | "display" | "device" | "sensors" | "console";
   const TABS: [Tab, string][] = [
     ["connection", "Connection"],
+    ["display", "Display"],
     ["device", "Device"],
     ["sensors", "Sensors"],
     ["console", "Console"],
@@ -89,9 +92,17 @@
     follow = consoleEl.scrollHeight - consoleEl.scrollTop - consoleEl.clientHeight < 24;
   }
 
+  const SCREENS: [DeviceId, string][] = [
+    ["cpu", "Left screen"],
+    ["gpu", "Right screen"],
+  ];
+  // Thumbnails use the host's latest sample, so they have data even with no board attached.
+  const preview = (id: DeviceId, face: Face) => screenFor(id, face, monitor.last?.[id], false, false, fanRpm(monitor.last, id));
+  const pick = (id: DeviceId, face: Face) => monitor.setFaces({ ...monitor.faces, [id]: face });
+
   const hex = (n: number) => n.toString(16).padStart(4, "0");
   const kb = (n: number) => `${Math.round(n / 1024)} KB`;
-  const fmt = (r: Reading) => (r.unit === "RPM" || r.unit === "%" ? r.value.toFixed(0) : r.value.toFixed(1));
+  const fmt = (r: Reading) => (r.unit === "RPM" || r.unit === "%" || r.unit === "MB" ? r.value.toFixed(0) : r.value.toFixed(1));
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -151,6 +162,30 @@
             <div><dt>Stale after</dt><dd>3 s</dd></div>
           </dl>
         </section>
+      {:else if tab === "display"}
+        <p class="hint">Pick a watch face for each screen. The board switches with the next frame it gets, and the choice is kept.</p>
+        {#each SCREENS as [id, side] (id)}
+          {@const current = monitor.faces[id]}
+          <section style:--accent={DEVICES[id].accent}>
+            <h3>{side} · {DEVICES[id].title}</h3>
+            <div class="faces" role="radiogroup" aria-label="{side} face">
+              {#each FACES as face (face.id)}
+                <button
+                  class="face"
+                  class:checked={current === face.id}
+                  role="radio"
+                  aria-checked={current === face.id}
+                  title={face.blurb}
+                  onclick={() => pick(id, face.id)}
+                >
+                  <span class="thumb"><Eye {id} screen={preview(id, face.id)} board="live" size={66} /></span>
+                  <span class="fname">{face.name}</span>
+                </button>
+              {/each}
+            </div>
+            <p class="fblurb">{FACES.find((f) => f.id === current)?.blurb}</p>
+          </section>
+        {/each}
       {:else if tab === "device"}
         <section>
           <h3>Board</h3>
@@ -239,7 +274,7 @@
           {/if}
         </section>
       {:else if tab === "sensors"}
-        <p class="hint">Every raw value the host can read. The board gets the CPU average, the first GPU and the fastest fan of each kind.</p>
+        <p class="hint">Every raw value the host can read. The board gets the CPU average, the first GPU, the fastest fan of each kind, RAM and VRAM.</p>
         {#each groups as [source, list] (source)}
           <section class="group">
             <h3>{source}</h3>
@@ -297,7 +332,7 @@
   nav {
     position: relative;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     margin: 14px;
     padding: 3px;
     border-radius: 12px;
@@ -323,7 +358,7 @@
     top: 3px;
     bottom: 3px;
     left: 3px;
-    width: calc((100% - 6px) / 4);
+    width: calc((100% - 6px) / 5);
     border-radius: 9px;
     background: rgba(255, 255, 255, 0.08);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
@@ -422,6 +457,54 @@
   }
   .pmeta {
     font: 500 10.5px/1 var(--mono);
+    color: var(--faint);
+  }
+
+  .faces {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  .face {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 0 9px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.02);
+    color: var(--dim);
+    cursor: pointer;
+    transition:
+      border-color 200ms,
+      background 200ms,
+      color 200ms;
+  }
+  .face:hover {
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .face.checked {
+    border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+    color: var(--text);
+  }
+  .face:focus-visible {
+    outline: 1.5px solid var(--accent);
+  }
+  .thumb {
+    border-radius: 50%;
+    line-height: 0;
+    box-shadow:
+      0 0 0 1px #000,
+      0 0 0 2px rgba(255, 255, 255, 0.08);
+  }
+  .fname {
+    font: 550 11.5px/1 var(--sans);
+  }
+  .fblurb {
+    margin: 10px 0 0;
+    font: 400 12px/1.4 var(--sans);
     color: var(--faint);
   }
 

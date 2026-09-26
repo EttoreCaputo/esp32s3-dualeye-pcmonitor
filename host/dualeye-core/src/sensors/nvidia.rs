@@ -4,7 +4,7 @@ use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
 
 use super::Reading;
-use crate::snapshot::{DeviceMetrics, round1};
+use crate::snapshot::{DeviceMetrics, Memory, round1};
 
 pub struct Nvidia {
     nvml: Nvml,
@@ -24,6 +24,7 @@ impl Nvidia {
             load_pct: dev.utilization_rates().ok().map(|u| u.gpu as f32),
             clock_mhz: dev.clock_info(Clock::Graphics).ok(),
             power_w: dev.power_usage().ok().map(|mw| round1(f64::from(mw) / 1000.0)),
+            mem: dev.memory_info().ok().and_then(|m| Memory::from_bytes(m.used, m.total)),
         };
         let fans = (0..dev.num_fans().unwrap_or(0)).filter_map(|i| dev.fan_speed_rpm(i).ok()).collect();
         Some((metrics, fans))
@@ -48,6 +49,10 @@ impl Nvidia {
             }
             if let Ok(mw) = dev.power_usage() {
                 push("Power".into(), f64::from(mw) / 1000.0, "W");
+            }
+            if let Ok(m) = dev.memory_info() {
+                push("VRAM used".into(), (m.used / (1024 * 1024)) as f64, "MB");
+                push("VRAM total".into(), (m.total / (1024 * 1024)) as f64, "MB");
             }
             for fan in 0..dev.num_fans().unwrap_or(0) {
                 if let Ok(rpm) = dev.fan_speed_rpm(fan) {

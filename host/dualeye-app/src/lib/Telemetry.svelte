@@ -2,7 +2,7 @@
   import { Tween } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
   import Chart from "./Chart.svelte";
-  import { DEVICES, heatColor, type DeviceId } from "./firmware";
+  import { COLOR, DEVICES, heatColor, type DeviceId } from "./firmware";
   import type { Metrics, Sample } from "./monitor.svelte";
 
   let { id, metrics, fan, samples, lcd }: {
@@ -20,6 +20,7 @@
   const clock = new Tween(0, opts);
   const power = new Tween(0, opts);
   const rpm = new Tween(0, opts);
+  const memUsed = new Tween(0, opts);
 
   $effect(() => {
     if (metrics?.temp_c !== undefined) temp.target = metrics.temp_c;
@@ -27,7 +28,11 @@
     if (metrics?.clock_mhz !== undefined) clock.target = metrics.clock_mhz;
     if (metrics?.power_w !== undefined) power.target = metrics.power_w;
     if (fan !== undefined) rpm.target = fan;
+    if (metrics?.mem !== undefined) memUsed.target = metrics.mem.used_mb;
   });
+
+  const mem = $derived(metrics?.mem && metrics.mem.total_mb > 0 ? metrics.mem : undefined);
+  const gb = (mb: number) => mb / 1024;
 
   const heat = $derived(heatColor(id, metrics?.temp_c));
   const hasTemp = $derived(metrics?.temp_c !== undefined);
@@ -40,7 +45,7 @@
   });
 </script>
 
-<article class="card" style:--accent={dev.accent} style:--heat={heat}>
+<article class="card" style:--accent={dev.accent} style:--heat={heat} style:--mem={COLOR.mem}>
   <header>
     <span class="dot"></span>
     <h2>{dev.title}</h2>
@@ -82,6 +87,18 @@
         <div>
           <dt>Fan</dt>
           <dd>{fan === undefined ? "—" : Math.round(rpm.current).toLocaleString("en-US")}<small>rpm</small></dd>
+        </div>
+        <div class="wide">
+          <dt>{dev.memTitle}</dt>
+          {#if mem}
+            <dd>
+              {gb(memUsed.current).toFixed(1)}<small>/ {gb(mem.total_mb).toFixed(0)} GB</small>
+              <span class="pct">{Math.round((memUsed.current / mem.total_mb) * 100)}%</span>
+            </dd>
+            <div class="bar"><span style:width="{Math.min(100, (memUsed.current / mem.total_mb) * 100)}%"></span></div>
+          {:else}
+            <dd>—<small>GB</small></dd>
+          {/if}
         </div>
       </dl>
     </div>
@@ -211,6 +228,27 @@
   }
   dd.accent {
     color: var(--accent);
+  }
+  .wide {
+    grid-column: 1 / -1;
+  }
+  .pct {
+    float: right;
+    font: 550 11px/16px var(--mono);
+    color: var(--mem);
+  }
+  .bar {
+    height: 4px;
+    margin-top: 8px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--mem) 16%, transparent);
+    overflow: hidden;
+  }
+  .bar span {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--mem);
   }
   dd small {
     font-size: 10.5px;

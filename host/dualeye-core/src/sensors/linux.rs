@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::{PlatformSample, Reading, average};
-use crate::snapshot::{DeviceMetrics, round1};
+use crate::snapshot::{DeviceMetrics, Memory, round1};
 
 const HWMON_ROOT: &str = "/sys/class/hwmon";
 const POWERCAP_ROOT: &str = "/sys/class/powercap";
@@ -68,6 +68,11 @@ impl LinuxSensors {
             for (kind, scale, unit) in [("temp", 1000.0, "°C"), ("fan", 1.0, "RPM"), ("power", 1e6, "W")] {
                 for c in channels(&dev.dir, kind) {
                     out.push(Reading { source: source.clone(), label: c.label, value: c.value / scale, unit });
+                }
+            }
+            if let Some(vram) = amd_vram(&dev.dir) {
+                for (label, mb) in [("VRAM used", vram.used_mb), ("VRAM total", vram.total_mb)] {
+                    out.push(Reading { source: source.clone(), label: label.into(), value: f64::from(mb), unit: "MB" });
                 }
             }
         }
@@ -135,7 +140,14 @@ fn amd_gpu_metrics(dir: &Path) -> DeviceMetrics {
         load_pct: read_number(&dir.join("device/gpu_busy_percent")).map(|v| v as f32),
         clock_mhz: read_number(&dir.join("freq1_input")).map(|hz| (hz / 1e6).round() as u32),
         power_w: power.map(|uw| round1(uw / 1e6)),
+        mem: amd_vram(dir),
     }
+}
+
+fn amd_vram(dir: &Path) -> Option<Memory> {
+    let used = read_number(&dir.join("device/mem_info_vram_used"))?;
+    let total = read_number(&dir.join("device/mem_info_vram_total"))?;
+    Memory::from_bytes(used as u64, total as u64)
 }
 
 /// CPU package energy counters. `energy_uj` is root-only on most distros since
@@ -236,6 +248,8 @@ mod tests {
         write(&hw, "hwmon3/power1_average", "20000000");
         write(&hw, "hwmon3/freq1_input", "210000000");
         write(&hw, "hwmon3/device/gpu_busy_percent", "3");
+        write(&hw, "hwmon3/device/mem_info_vram_used", "536870912");
+        write(&hw, "hwmon3/device/mem_info_vram_total", "17163091968");
         let pc = tmp.path().join("powercap");
         write(&pc, "intel-rapl:0/name", "package-0");
         write(&pc, "intel-rapl:0/energy_uj", "1000000");
@@ -255,7 +269,13 @@ mod tests {
         assert_eq!(s.gpu_fans, vec![0]);
         assert_eq!(
             s.gpu,
-            DeviceMetrics { temp_c: Some(31.0), load_pct: Some(3.0), clock_mhz: Some(210), power_w: Some(20.0) }
+            DeviceMetrics {
+                temp_c: Some(31.0),
+                load_pct: Some(3.0),
+                clock_mhz: Some(210),
+                power_w: Some(20.0),
+                mem: Some(Memory { used_mb: 512, total_mb: 16368 }),
+            }
         );
         // First RAPL read only primes the counter.
         assert_eq!(s.cpu_power, None);

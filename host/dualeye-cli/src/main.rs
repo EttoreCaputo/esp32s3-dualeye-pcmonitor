@@ -5,16 +5,17 @@
 //!   dualeye                 # auto-detect the board and stream
 //!   dualeye --once          # print one snapshot, no serial
 //!   dualeye --sensors       # list every raw sensor the backends see
+//!   dualeye --cpu-face rings --gpu-face memory
 
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use clap::Parser;
 use dualeye_core::bridge::{self, BridgeConfig, BridgeEvent};
-use dualeye_core::{Collector, Snapshot, serial};
+use dualeye_core::{Collector, Face, Faces, Memory, Snapshot, serial};
 
 #[derive(Parser)]
 #[command(name = "dualeye", version, about = "Stream PC sensors to the ESP32-S3 DualEye board")]
@@ -28,6 +29,12 @@ struct Args {
     /// Seconds to wait after opening the port before the first write
     #[arg(long, default_value_t = 2.0)]
     boot_wait: f64,
+    /// Watch face on the left (CPU) screen: classic, rings, memory or gauge
+    #[arg(long, default_value = "classic")]
+    cpu_face: Face,
+    /// Watch face on the right (GPU) screen: classic, rings, memory or gauge
+    #[arg(long, default_value = "classic")]
+    gpu_face: Face,
     /// Print one snapshot as JSON and exit, without opening the port
     #[arg(long, conflicts_with_all = ["sensors", "list_ports"])]
     once: bool,
@@ -72,6 +79,7 @@ fn main() -> ExitCode {
         port: args.port,
         interval: Duration::from_millis(args.interval_ms),
         boot_wait: Duration::from_secs_f64(args.boot_wait.max(0.0)),
+        faces: Arc::new(Mutex::new(Faces { cpu: args.cpu_face, gpu: args.gpu_face })),
     };
     let stop = Arc::new(AtomicBool::new(false));
     let fatal = Arc::new(AtomicBool::new(false));
@@ -106,19 +114,26 @@ fn summary(s: &Snapshot) -> String {
         v.map_or_else(|| "—".into(), |v| v.to_string())
     }
     let fan = |id| opt(s.fan_rpm(id));
+    let mem = |m: Option<Memory>| m.map_or_else(|| "—".into(), |m| format!("{:.1}/{:.0}G", gib(m.used_mb), gib(m.total_mb)));
     format!(
-        "cpu {}C {}% {}MHz {}W fan {} | gpu {}C {}% {}MHz {}W fan {}",
+        "cpu {}C {}% {}MHz {}W fan {} ram {} | gpu {}C {}% {}MHz {}W fan {} vram {}",
         opt(s.cpu.temp_c),
         opt(s.cpu.load_pct),
         opt(s.cpu.clock_mhz),
         opt(s.cpu.power_w),
         fan("cpu"),
+        mem(s.cpu.mem),
         opt(s.gpu.temp_c),
         opt(s.gpu.load_pct),
         opt(s.gpu.clock_mhz),
         opt(s.gpu.power_w),
         fan("gpu"),
+        mem(s.gpu.mem),
     )
+}
+
+fn gib(mb: u32) -> f64 {
+    f64::from(mb) / 1024.0
 }
 
 fn permission_hint(port: &str) -> String {

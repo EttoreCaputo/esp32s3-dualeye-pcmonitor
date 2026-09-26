@@ -6,7 +6,7 @@
 ![LCD](https://img.shields.io/badge/LCD-GC9A01%20×2-lightgrey)
 ![Host](https://img.shields.io/badge/host-Rust-purple)
 
-PC monitoring on **ESP32-S3 DualEye** (two 240×240 round displays): CPU/GPU temperatures and fans, Apple Watch–style UI.
+PC monitoring on **ESP32-S3 DualEye** (two 240×240 round displays): CPU/GPU temperatures, load, fans, RAM and VRAM, on Apple Watch–style faces you pick per screen.
 
 A standalone Rust program on the host reads the sensors straight from the OS (no CoolerControl or other daemon) and sends them to the board over USB Serial/JTAG as one JSON line per second.
 
@@ -30,6 +30,7 @@ cd host
 cargo run --release              # auto-detects the board (USB 303a:xxxx) and streams
 cargo run --release -- --once    # print one snapshot, no serial
 cargo run --release -- --sensors # every raw sensor the backends can see
+cargo run --release -- --cpu-face rings --gpu-face memory
 cargo run --release -- --help
 ```
 
@@ -46,6 +47,8 @@ The binary ends up in `host/target/release/dualeye` (`dualeye.exe` on Windows) a
 | AMD GPU | hwmon `amdgpu` | — | — |
 | Apple GPU temp | — | — | IOHID |
 | Fans | hwmon (`cpu` = fastest board fan, `gpu` = fastest GPU fan) | — | — |
+| RAM | ✓ | ✓ | ✓ |
+| VRAM | NVML, `amdgpu` (`mem_info_vram_*`) | NVML | — |
 
 Missing values are just left out of the snapshot; the board shows what it gets.
 
@@ -60,6 +63,19 @@ echo 'z /sys/class/powercap/intel-rapl:0/energy_uj 0444 - - -' | sudo tee /etc/t
 ```bash
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/dualeye-rapl.conf
 ```
+
+## Watch faces
+
+Each screen shows one of four faces, chosen independently (left = CPU, right = GPU):
+
+| Face | Shows |
+|------|-------|
+| `classic` | Temperature, clock, power, fan RPM; load on the ring (the default) |
+| `rings` | Three rings, outside in: load, temperature (cyan, orange from 80 °C, red from 90 °C), memory; temperature and both percentages in the middle |
+| `memory` | RAM (left) or VRAM (right): GiB in use, total and share, which also fills the ring; orange from 90 % |
+| `gauge` | Temperature in large type on a 270° dial, load below |
+
+Pick them in the app (Settings → **Display**, saved across restarts) or with `--cpu-face` / `--gpu-face` on the CLI. The host sends the choice in every line, so the board switches on the next snapshot and needs no storage of its own; a line without `face` shows `classic`.
 
 ## Desktop app
 
@@ -144,7 +160,20 @@ cargo build --release       # host/target/release/dualeye
 
 Plain `cargo` commands in `host/` only touch `dualeye-core` and `dualeye-cli` (the workspace's default members), so they work without the GUI packages.
 
-### Desktop app
+### Watch faces
+
+Each screen shows one of four faces, chosen independently (left = CPU, right = GPU):
+
+| Face | Shows |
+|------|-------|
+| `classic` | Temperature, clock, power, fan RPM; load on the ring (the default) |
+| `rings` | Three rings, outside in: load, temperature (cyan, orange from 80 °C, red from 90 °C), memory; temperature and both percentages in the middle |
+| `memory` | RAM (left) or VRAM (right): GiB in use, total and share, which also fills the ring; orange from 90 % |
+| `gauge` | Temperature in large type on a 270° dial, load below |
+
+Pick them in the app (Settings → **Display**, saved across restarts) or with `--cpu-face` / `--gpu-face` on the CLI. The host sends the choice in every line, so the board switches on the next snapshot and needs no storage of its own; a line without `face` shows `classic`.
+
+## Desktop app
 
 ```bash
 cd host/dualeye-app
@@ -170,7 +199,7 @@ Where things live in the app:
 |------|-------|
 | Screen mirror (keep in sync with `main/ui_watch.c`) | `src/lib/Board.svelte`, `Eye.svelte`, `firmware.ts` |
 | Live state, bridge/flash events, synthetic preview feed | `src/lib/monitor.svelte.ts` |
-| Settings drawer (Connection, Device, Sensors, Console) | `src/lib/Drawer.svelte` |
+| Settings drawer (Connection, Display, Device, Sensors, Console) | `src/lib/Drawer.svelte` |
 | Tauri commands, tray, bridge lifecycle | `src-tauri/src/lib.rs` |
 | esptool runner and first-use setup | `host/dualeye-core/src/flasher.rs`, `flasher/setup.rs` |
 
@@ -187,7 +216,7 @@ cd host/dualeye-app && npm run check
 ## Wire format
 
 ```json
-{"v":1,"ts":1790358954,"cpu":{"temp_c":38.4,"load_pct":3.3,"clock_mhz":1187,"power_w":14.6},"gpu":{"temp_c":34.0,"load_pct":0.0,"clock_mhz":210,"power_w":21.2},"fans":[{"id":"cpu","rpm":3813},{"id":"gpu","rpm":0}]}
+{"v":1,"ts":1790419114,"cpu":{"temp_c":40.2,"load_pct":2.8,"clock_mhz":1210,"power_w":14.6,"mem":{"used_mb":12568,"total_mb":62277}},"gpu":{"temp_c":35.0,"load_pct":0.0,"clock_mhz":210,"power_w":22.1,"mem":{"used_mb":14,"total_mb":24576}},"fans":[{"id":"cpu","rpm":3824},{"id":"gpu","rpm":0}],"face":{"cpu":"rings","gpu":"memory"}}
 ```
 
-Parsed by `main/metrics_parser.c`; lines without any temperature are ignored, and the UI goes stale after 3 s without data.
+Parsed by `main/metrics_parser.c`; lines without any temperature are ignored, and the UI goes stale after 3 s without data. `mem` is in MiB: system RAM under `cpu`, VRAM under `gpu`. `face` is added by the bridge, not the sensor collector; unknown face names fall back to `classic`.

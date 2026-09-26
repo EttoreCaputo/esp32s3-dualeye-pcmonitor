@@ -9,6 +9,8 @@
 //! | AMD GPU         | hwmon (amdgpu)              | —                        | —                  |
 //! | Other GPU temp  | —                           | —                        | SMC / IOHID        |
 //! | Fans            | hwmon                       | —                        | —                  |
+//! | RAM             | sysinfo                     | sysinfo                  | sysinfo            |
+//! | VRAM            | NVML, amdgpu `mem_info_*`   | NVML                     | —                  |
 
 #[cfg(not(target_os = "linux"))]
 mod components;
@@ -20,9 +22,9 @@ mod nvidia;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use sysinfo::{CpuRefreshKind, RefreshKind, System};
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
-use crate::snapshot::{DeviceMetrics, Fan, PROTOCOL_VERSION, Snapshot, round1};
+use crate::snapshot::{DeviceMetrics, Fan, Memory, PROTOCOL_VERSION, Snapshot, round1};
 
 /// One raw sensor value, for diagnostics (`dualeye --sensors`, an app's sensor page).
 #[derive(Debug, Clone, Serialize)]
@@ -55,7 +57,7 @@ pub struct Collector {
 
 impl Collector {
     pub fn new() -> Self {
-        let sys = System::new_with_specifics(RefreshKind::nothing().with_cpu(cpu_refresh()));
+        let sys = System::new_with_specifics(RefreshKind::nothing().with_cpu(cpu_refresh()).with_memory(ram_refresh()));
         Self {
             sys,
             #[cfg(target_os = "linux")]
@@ -72,6 +74,7 @@ impl Collector {
     /// a steady interval (≥ 200 ms).
     pub fn sample(&mut self) -> Snapshot {
         self.sys.refresh_cpu_specifics(cpu_refresh());
+        self.sys.refresh_memory_specifics(ram_refresh());
         #[allow(unused_mut)]
         let mut platform = self.platform.sample();
 
@@ -92,6 +95,7 @@ impl Collector {
             load_pct: Some(round1(f64::from(self.sys.global_cpu_usage()))),
             clock_mhz: (clock > 0).then_some(clock as u32),
             power_w: platform.cpu_power.map(round1),
+            mem: self.ram(),
         };
 
         let mut fans = Vec::new();
@@ -108,13 +112,24 @@ impl Collector {
             cpu,
             gpu: platform.gpu,
             fans,
+            face: None,
         }
+    }
+
+    fn ram(&self) -> Option<Memory> {
+        Memory::from_bytes(self.sys.used_memory(), self.sys.total_memory())
     }
 
     /// Every raw temperature/fan/power value the backends can see.
     pub fn readings(&mut self) -> Vec<Reading> {
         #[allow(unused_mut)]
         let mut out = self.platform.readings();
+        self.sys.refresh_memory_specifics(ram_refresh());
+        if let Some(ram) = self.ram() {
+            for (label, mb) in [("RAM used", ram.used_mb), ("RAM total", ram.total_mb)] {
+                out.push(Reading { source: "memory".into(), label: label.into(), value: f64::from(mb), unit: "MB" });
+            }
+        }
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Some(nvidia) = &self.nvidia {
             out.extend(nvidia.readings());
@@ -131,6 +146,10 @@ impl Default for Collector {
 
 fn cpu_refresh() -> CpuRefreshKind {
     CpuRefreshKind::nothing().with_cpu_usage().with_frequency()
+}
+
+fn ram_refresh() -> MemoryRefreshKind {
+    MemoryRefreshKind::nothing().with_ram()
 }
 
 pub(crate) fn average(values: &[f64]) -> Option<f64> {

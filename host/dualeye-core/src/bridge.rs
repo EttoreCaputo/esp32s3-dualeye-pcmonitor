@@ -5,7 +5,7 @@
 //! a Tauri app can forward them to the webview with `app.emit(..)`.
 
 use std::io::{self, Read, Write};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::sensors::Collector;
 use crate::serial;
-use crate::snapshot::Snapshot;
+use crate::snapshot::{Faces, Snapshot};
 
 #[derive(Debug, Clone)]
 pub struct BridgeConfig {
@@ -24,11 +24,20 @@ pub struct BridgeConfig {
     pub interval: Duration,
     /// Pause after opening the port, in case opening it rebooted the board.
     pub boot_wait: Duration,
+    /// Watch face of each screen, stamped on every snapshot. Shared, so a
+    /// frontend can change it while the bridge runs; it applies from the next
+    /// snapshot.
+    pub faces: Arc<Mutex<Faces>>,
 }
 
 impl Default for BridgeConfig {
     fn default() -> Self {
-        Self { port: None, interval: Duration::from_secs(1), boot_wait: Duration::from_secs(2) }
+        Self {
+            port: None,
+            interval: Duration::from_secs(1),
+            boot_wait: Duration::from_secs(2),
+            faces: Arc::default(),
+        }
     }
 }
 
@@ -132,7 +141,8 @@ fn session(
         sleep_unless_stopped(config.boot_wait, stop);
         let mut next = Instant::now();
         while !stop.load(Ordering::Relaxed) {
-            let snapshot = collector.sample();
+            let mut snapshot = collector.sample();
+            snapshot.face = Some(*config.faces.lock().unwrap());
             let sent = snapshot.is_sendable();
             if sent {
                 ser.write_all(snapshot.to_line().as_bytes())?;

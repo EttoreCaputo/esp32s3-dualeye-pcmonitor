@@ -187,6 +187,40 @@ static bool read_number_field(js_t *j, float *out)
     return true;
 }
 
+static bool parse_mem_object(js_t *j, metrics_temp_t *temp)
+{
+    if (!consume(j, '{')) {
+        return false;
+    }
+    bool got_used = false;
+    bool got_total = false;
+    for (;;) {
+        char key[32];
+        bool done = false;
+        if (!object_key(j, key, sizeof(key), &done)) {
+            return false;
+        }
+        if (done) {
+            temp->mem_valid = got_used && got_total && temp->mem_total_mb > 0.0f;
+            return true;
+        }
+        if (strcmp(key, "used_mb") == 0) {
+            if (!read_number_field(j, &temp->mem_used_mb)) {
+                return false;
+            }
+            got_used = true;
+        } else if (strcmp(key, "total_mb") == 0) {
+            if (!read_number_field(j, &temp->mem_total_mb)) {
+                return false;
+            }
+            got_total = true;
+        } else if (!skip_value(j, 1)) {
+            return false;
+        }
+        object_sep(j);
+    }
+}
+
 static bool parse_temp_object(js_t *j, metrics_temp_t *temp)
 {
     if (!consume(j, '{')) {
@@ -224,6 +258,10 @@ static bool parse_temp_object(js_t *j, metrics_temp_t *temp)
             }
         } else if (strcmp(key, "power_w") == 0) {
             if (!read_number_field(j, &temp->power_w)) {
+                return false;
+            }
+        } else if (strcmp(key, "mem") == 0) {
+            if (!parse_mem_object(j, temp)) {
                 return false;
             }
         } else if (!skip_value(j, 1)) {
@@ -305,6 +343,55 @@ static bool parse_fans(js_t *j, metrics_snapshot_t *snap)
     }
 }
 
+static metrics_face_t face_from_name(const char *name)
+{
+    static const char *const names[METRICS_FACE_COUNT] = {
+        [METRICS_FACE_CLASSIC] = "classic",
+        [METRICS_FACE_RINGS] = "rings",
+        [METRICS_FACE_MEMORY] = "memory",
+        [METRICS_FACE_GAUGE] = "gauge",
+    };
+    for (int i = 0; i < METRICS_FACE_COUNT; i++) {
+        if (strcmp(name, names[i]) == 0) {
+            return (metrics_face_t) i;
+        }
+    }
+    return METRICS_FACE_CLASSIC;
+}
+
+static bool parse_face_object(js_t *j, metrics_snapshot_t *snap)
+{
+    if (!consume(j, '{')) {
+        return false;
+    }
+    for (;;) {
+        char key[32];
+        bool done = false;
+        if (!object_key(j, key, sizeof(key), &done)) {
+            return false;
+        }
+        if (done) {
+            return true;
+        }
+        metrics_face_t *face = NULL;
+        if (strcmp(key, "cpu") == 0) {
+            face = &snap->cpu_face;
+        } else if (strcmp(key, "gpu") == 0) {
+            face = &snap->gpu_face;
+        }
+        if (face != NULL) {
+            char name[16];
+            if (!parse_string(j, name, sizeof(name))) {
+                return false;
+            }
+            *face = face_from_name(name);
+        } else if (!skip_value(j, 1)) {
+            return false;
+        }
+        object_sep(j);
+    }
+}
+
 esp_err_t metrics_parse_line(const char *line, metrics_snapshot_t *out)
 {
     if (line == NULL || out == NULL) {
@@ -334,6 +421,8 @@ esp_err_t metrics_parse_line(const char *line, metrics_snapshot_t *out)
             ok = parse_temp_object(&j, &out->gpu);
         } else if (strcmp(key, "fans") == 0) {
             ok = parse_fans(&j, out);
+        } else if (strcmp(key, "face") == 0) {
+            ok = parse_face_object(&j, out);
         } else if (strcmp(key, "ts") == 0) {
             double value = 0.0;
             ok = parse_number(&j, &value);

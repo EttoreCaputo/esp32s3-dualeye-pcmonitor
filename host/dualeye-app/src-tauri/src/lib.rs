@@ -11,12 +11,14 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use dualeye_core::flasher::setup;
-use dualeye_core::{Bridge, BridgeConfig, BridgeEvent, ChipInfo, Collector, Esptool, FlashEvent, PortInfo, Reading, Snapshot, serial};
+use dualeye_core::{
+    Bridge, BridgeConfig, BridgeEvent, ChipInfo, Collector, Esptool, Faces, FlashEvent, PortInfo, Reading, Snapshot, serial,
+};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -31,6 +33,8 @@ const FIRMWARE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../
 struct Settings {
     /// `None` auto-detects the board.
     port: Option<String>,
+    #[serde(default)]
+    faces: Faces,
 }
 
 #[derive(Default)]
@@ -85,6 +89,8 @@ struct AppState {
     bridge: Mutex<Option<Bridge>>,
     settings: Mutex<Settings>,
     settings_path: Option<PathBuf>,
+    /// Handed to every bridge, so a face change reaches the running one.
+    faces: Arc<Mutex<Faces>>,
     /// Separate from the bridge's own collector, for the sensor list.
     collector: Mutex<Option<Collector>>,
     /// esptool holds the port (identify or flash in progress).
@@ -117,6 +123,7 @@ struct Status {
     connected_age_ms: Option<u64>,
     logs: Vec<String>,
     port_setting: Option<String>,
+    faces: Faces,
 }
 
 #[tauri::command]
@@ -133,6 +140,7 @@ fn status(state: State<AppState>) -> Status {
         connected_age_ms: age(link.connected_at),
         logs: link.logs.iter().cloned().collect(),
         port_setting: state.settings.lock().unwrap().port.clone(),
+        faces: *state.faces.lock().unwrap(),
     }
 }
 
@@ -160,6 +168,13 @@ async fn set_port(app: AppHandle, port: Option<String>) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_faces(state: State<AppState>, faces: Faces) {
+    *state.faces.lock().unwrap() = faces;
+    state.settings.lock().unwrap().faces = faces;
+    state.save_settings();
 }
 
 #[tauri::command]
@@ -250,7 +265,8 @@ async fn with_device<T: Send + 'static>(
 
 fn start_bridge(app: &AppHandle, port: Option<String>) -> Bridge {
     let handle = app.clone();
-    Bridge::spawn(BridgeConfig { port, ..Default::default() }, move |event| {
+    let faces = app.state::<AppState>().faces.clone();
+    Bridge::spawn(BridgeConfig { port, faces, ..Default::default() }, move |event| {
         if let Some(state) = handle.try_state::<AppState>() {
             state.link.lock().unwrap().record(&event);
         }
@@ -313,11 +329,13 @@ pub fn run() {
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
             let port = settings.port.clone();
+            let faces = Arc::new(Mutex::new(settings.faces));
             app.manage(AppState {
                 link: Mutex::new(Link { kind: "searching", ..Default::default() }),
                 bridge: Mutex::new(None),
                 settings: Mutex::new(settings),
                 settings_path,
+                faces,
                 collector: Mutex::new(None),
                 device_busy: AtomicBool::new(false),
                 esptool_dir,
@@ -337,7 +355,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![status, list_ports, set_port, readings, firmware_info, identify_board, flash_board])
+        .invoke_handler(tauri::generate_handler![status, list_ports, set_port, set_faces, readings, firmware_info, identify_board, flash_board])
         .build(tauri::generate_context!())
         .expect("failed to build the DualEye app")
         .run(|app, event| {

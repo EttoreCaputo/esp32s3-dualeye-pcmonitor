@@ -21,12 +21,25 @@ typedef enum {
     METRICS_UI_ERROR,
 } metrics_ui_state_t;
 
+/** Watch face of one screen. Names on the wire: classic, rings, memory, gauge. */
+typedef enum {
+    METRICS_FACE_CLASSIC = 0,
+    METRICS_FACE_RINGS,
+    METRICS_FACE_MEMORY,
+    METRICS_FACE_GAUGE,
+    METRICS_FACE_COUNT,
+} metrics_face_t;
+
 typedef struct {
     bool valid;
     float temp_c;
     float usage_pct;
     float clock_ghz;
     float power_w;
+    /* System RAM for the CPU, VRAM for the GPU. */
+    bool mem_valid;
+    float mem_used_mb;
+    float mem_total_mb;
 } metrics_temp_t;
 
 typedef struct {
@@ -42,6 +55,8 @@ typedef struct {
     metrics_temp_t gpu;
     metrics_fan_t fans[METRICS_FAN_MAX];
     size_t fan_count;
+    metrics_face_t cpu_face;
+    metrics_face_t gpu_face;
     metrics_ui_state_t state;
 } metrics_snapshot_t;
 

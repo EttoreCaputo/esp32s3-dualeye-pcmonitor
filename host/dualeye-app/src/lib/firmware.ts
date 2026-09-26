@@ -5,62 +5,143 @@ import type { Metrics } from "./monitor.svelte";
 
 export const LCD = 240;
 export const USAGE_ARC_SIZE = 216;
+export const RING_GAP = 32;
 export const ARC_WIDTH = 13;
+export const GAUGE_ROTATION = 135;
+export const GAUGE_SWEEP = 270;
 export const TEMP_WARM_C = 80;
 export const TEMP_HOT_C = 90;
+export const MEM_HIGH_PCT = 90;
+export const TEMP_MAX_C = 100;
 
 export const COLOR = {
   text: "#FFFFFF",
   textDim: "#9A9A9C",
   cyan: "#3AE7ED",
+  tempTrack: "#0B2C30",
+  mem: "#5E8BFF",
+  memTrack: "#141D3A",
   warm: "#F8A639",
   hot: "#F05354",
   stale: "#FFD60A",
 } as const;
 
 export const DEVICES = {
-  cpu: { title: "CPU", accent: "#C4F06A", track: "#163012" },
-  gpu: { title: "GPU", accent: "#C86CF0", track: "#2A1238" },
+  cpu: { title: "CPU", memTitle: "RAM", accent: "#C4F06A", track: "#163012" },
+  gpu: { title: "GPU", memTitle: "VRAM", accent: "#C86CF0", track: "#2A1238" },
 } as const;
 export type DeviceId = keyof typeof DEVICES;
 
-/** The text and colours one round screen shows, as `update_temp_screen` computes them. */
+/** `metrics_face_t`; the names are what goes on the wire. */
+export type Face = "classic" | "rings" | "memory" | "gauge";
+export type Faces = Record<DeviceId, Face>;
+export const DEFAULT_FACES: Faces = { cpu: "classic", gpu: "classic" };
+export const FACES: { id: Face; name: string; blurb: string }[] = [
+  { id: "classic", name: "Classic", blurb: "Temperature, clock, power, fan" },
+  { id: "rings", name: "Rings", blurb: "Load, temperature and memory rings" },
+  { id: "memory", name: "Memory", blurb: "RAM or VRAM in use" },
+  { id: "gauge", name: "Gauge", blurb: "Large temperature on a dial" },
+];
+
+/** The text and colours one round screen shows, as the `update_*` functions in ui_watch.c compute them. */
 export type Screen = {
+  face: Face;
   placeholder: boolean;
+  title: string;
   value: string;
   clock: string;
   watts: string;
   usage: string;
   rpm: string;
+  mem: string;
+  memTotal: string;
   usagePct: number;
+  tempPct: number;
+  memPct: number;
+  tempRing: string;
   labelColor: string;
   valueColor: string;
   usageColor: string;
+  memColor: string;
   warn: boolean;
 };
 
 const cInt = (v: number) => Math.trunc(v + 0.5); // (int) (v + 0.5f)
+/** `clamp_pct()` */
+const pct = (v: number, max: number) => Math.min(100, Math.max(0, cInt((v / max) * 100)));
+const pctText = (p: number | undefined) => (p === undefined ? "--%" : `${p}%`);
 
-export function screenFor(id: DeviceId, m: Metrics | undefined, stale: boolean, waiting: boolean, fan?: number): Screen {
-  const accent = DEVICES[id].accent;
-  if (waiting || m?.temp_c === undefined) {
+export function screenFor(
+  id: DeviceId,
+  face: Face,
+  m: Metrics | undefined,
+  stale: boolean,
+  waiting: boolean,
+  fan?: number,
+): Screen {
+  const dev = DEVICES[id];
+  const accent = dev.accent;
+  const mem = m?.mem && m.mem.total_mb > 0 ? m.mem : undefined;
+  const memPct = mem ? pct(mem.used_mb, mem.total_mb) : undefined;
+  const title = face === "memory" ? dev.memTitle : dev.title;
+  const base = {
+    face,
+    title,
+    clock: "-- GHz",
+    watts: "-- W",
+    usage: "--%",
+    rpm: "--",
+    mem: "--%",
+    memTotal: "of -- GB",
+    usagePct: 0,
+    tempPct: 0,
+    memPct: 0,
+    tempRing: COLOR.cyan,
+    memColor: COLOR.mem,
+  };
+  // The memory face only needs memory; the others need a temperature.
+  if (waiting || (face === "memory" ? mem === undefined : m?.temp_c === undefined)) {
     return {
+      ...base,
       placeholder: true,
       value: "—",
-      clock: "— GHz",
-      watts: "— W",
-      usage: "—%",
-      rpm: "—",
-      usagePct: 0,
       labelColor: COLOR.textDim,
       valueColor: COLOR.textDim,
       usageColor: COLOR.textDim,
+      memColor: COLOR.textDim,
       warn: false,
     };
   }
+
+  if (face === "memory") {
+    const p = memPct!;
+    let labelColor: string = accent;
+    let valueColor: string = COLOR.text;
+    let warn = false;
+    if (p >= MEM_HIGH_PCT) {
+      labelColor = valueColor = COLOR.warm;
+      warn = true;
+    } else if (stale) {
+      labelColor = COLOR.stale;
+      valueColor = COLOR.textDim;
+    }
+    return {
+      ...base,
+      placeholder: false,
+      value: (mem!.used_mb / 1024).toFixed(1),
+      mem: pctText(p),
+      memTotal: `of ${(mem!.total_mb / 1024).toFixed(0)} GB`,
+      memPct: p,
+      labelColor,
+      valueColor,
+      usageColor: accent,
+      warn,
+    };
+  }
+
   // metrics_parser.c leaves absent fields at 0.
-  const temp = m.temp_c;
-  const usage = m.load_pct ?? 0;
+  const temp = m!.temp_c!;
+  const usage = m!.load_pct ?? 0;
   let labelColor: string = accent;
   let valueColor: string = COLOR.text;
   let warn = false;
@@ -74,17 +155,25 @@ export function screenFor(id: DeviceId, m: Metrics | undefined, stale: boolean, 
     labelColor = COLOR.stale;
     valueColor = COLOR.textDim;
   }
+  const usagePct = pct(usage, 100);
   return {
+    ...base,
     placeholder: false,
     value: `${cInt(temp)}°`,
-    clock: `${((m.clock_mhz ?? 0) / 1000).toFixed(1)} GHz`,
-    watts: `${(m.power_w ?? 0).toFixed(0)} W`,
-    usage: `${usage.toFixed(0)}%`,
-    rpm: fan === undefined ? "—" : String(fan),
-    usagePct: Math.min(100, Math.max(0, cInt(usage))),
+    clock: `${((m!.clock_mhz ?? 0) / 1000).toFixed(1)} GHz`,
+    watts: `${(m!.power_w ?? 0).toFixed(0)} W`,
+    // Classic prints the load with "%.0f", the other faces the clamped ring value.
+    usage: face === "classic" ? `${usage.toFixed(0)}%` : pctText(usagePct),
+    rpm: fan === undefined ? "--" : String(fan),
+    mem: pctText(memPct),
+    usagePct,
+    tempPct: pct(temp, TEMP_MAX_C),
+    memPct: memPct ?? 0,
+    tempRing: temp >= TEMP_HOT_C ? COLOR.hot : temp >= TEMP_WARM_C ? COLOR.warm : COLOR.cyan,
     labelColor,
     valueColor,
     usageColor: accent,
+    memColor: memPct === undefined ? COLOR.textDim : COLOR.mem,
     warn,
   };
 }
