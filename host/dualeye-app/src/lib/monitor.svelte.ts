@@ -1,0 +1,232 @@
+// Live model of the bridge and of what the board is showing right now.
+//
+// In the Tauri app the data comes from the Rust side (`dualeye-core`); opened
+// in a plain browser (`npm run dev`) it falls back to a synthetic feed so the
+// UI can be worked on without hardware.
+
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+export type Metrics = { temp_c?: number; load_pct?: number; clock_mhz?: number; power_w?: number };
+export type Fan = { id: string; rpm: number };
+export type Snapshot = { v: number; ts: number; cpu?: Metrics; gpu?: Metrics; fans?: Fan[] };
+export type PortInfo = { name: string; vid: number; pid: number; product: string | null; is_board: boolean };
+export type Reading = { source: string; label: string; value: number; unit: string };
+
+type BridgeEvent =
+  | { kind: "waiting"; reason: string }
+  | { kind: "connected"; port: string }
+  | { kind: "snapshot"; snapshot: Snapshot; sent: boolean }
+  | { kind: "board_log"; line: string }
+  | { kind: "disconnected"; port: string; reason: string; permission_denied: boolean };
+
+type Status = {
+  link: Link;
+  port: string | null;
+  message: string | null;
+  last: Snapshot | null;
+  sent: Snapshot | null;
+  sent_age_ms: number | null;
+  connected_age_ms: number | null;
+  logs: string[];
+  port_setting: string | null;
+};
+
+export type Link = "searching" | "connected" | "offline";
+/** Mirrors `metrics_ui_state_t` plus the moments the firmware is not running the UI. */
+export type BoardState = "off" | "boot" | "waiting" | "live" | "stale";
+export type Sample = { t: number; cpuT?: number; cpuL?: number; gpuT?: number; gpuL?: number };
+
+/** `METRICS_STALE_MS_DEFAULT` in main/metrics_model.h. */
+export const STALE_MS = 3000;
+/** Opening the port resets the S3; the UI is up again after about this long. */
+const BOOT_MS = 1100;
+const HISTORY = 180;
+const LOG_LINES = 300;
+
+class Monitor {
+  readonly preview = !isTauri();
+
+  link = $state<Link>("searching");
+  port = $state<string | null>(null);
+  portSetting = $state<string | null>(null);
+  message = $state("");
+  permissionDenied = $state(false);
+  /** Latest sample taken on the host. */
+  last = $state<Snapshot | null>(null);
+  /** Latest line actually written to the board: what its screens hold. */
+  shown = $state<Snapshot | null>(null);
+  sentAt = $state(0);
+  connectedAt = $state(0);
+  now = $state(Date.now());
+  history = $state<Sample[]>([]);
+  logs = $state<string[]>([]);
+
+  boardState: BoardState = $derived.by(() => {
+    if (this.link !== "connected") return "off";
+    if (this.now - this.connectedAt < BOOT_MS) return "boot";
+    if (!this.shown || this.sentAt < this.connectedAt) return "waiting";
+    return this.now - this.sentAt > STALE_MS ? "stale" : "live";
+  });
+
+  #started = false;
+
+  start() {
+    if (this.#started) return;
+    this.#started = true;
+    setInterval(() => (this.now = Date.now()), 250);
+    if (this.preview) startPreviewFeed((e) => this.#apply(e));
+    else void this.#connect();
+  }
+
+  async #connect() {
+    await listen<BridgeEvent>("bridge", (e) => this.#apply(e.payload));
+    const s = await invoke<Status>("status");
+    const now = Date.now();
+    this.link = s.link;
+    this.port = s.port;
+    this.portSetting = s.port_setting;
+    this.message = s.message ?? "";
+    this.last = s.last;
+    this.shown = s.sent;
+    if (s.sent_age_ms != null) this.sentAt = now - s.sent_age_ms;
+    if (s.connected_age_ms != null) this.connectedAt = now - s.connected_age_ms;
+    this.logs = s.logs;
+  }
+
+  #apply(e: BridgeEvent) {
+    const now = Date.now();
+    switch (e.kind) {
+      case "waiting":
+        this.link = "searching";
+        this.message = e.reason;
+        break;
+      case "connected":
+        this.link = "connected";
+        this.port = e.port;
+        this.message = "";
+        this.permissionDenied = false;
+        this.connectedAt = now;
+        this.shown = null;
+        break;
+      case "snapshot":
+        this.last = e.snapshot;
+        if (e.sent) {
+          this.shown = e.snapshot;
+          this.sentAt = now;
+        }
+        this.#record(now, e.snapshot);
+        break;
+      case "board_log":
+        this.logs.push(e.line);
+        if (this.logs.length > LOG_LINES) this.logs.splice(0, this.logs.length - LOG_LINES);
+        break;
+      case "disconnected":
+        this.link = "offline";
+        this.message = e.reason;
+        this.permissionDenied = e.permission_denied;
+        break;
+    }
+  }
+
+  #record(t: number, s: Snapshot) {
+    this.history.push({ t, cpuT: s.cpu?.temp_c, cpuL: s.cpu?.load_pct, gpuT: s.gpu?.temp_c, gpuL: s.gpu?.load_pct });
+    if (this.history.length > HISTORY) this.history.splice(0, this.history.length - HISTORY);
+  }
+
+  async listPorts(): Promise<PortInfo[]> {
+    if (this.preview) return [{ name: "/dev/ttyACM0", vid: 0x303a, pid: 0x1001, product: "USB JTAG/serial debug unit", is_board: true }];
+    return invoke<PortInfo[]>("list_ports");
+  }
+
+  async setPort(port: string | null) {
+    this.portSetting = port;
+    if (!this.preview) await invoke("set_port", { port });
+  }
+
+  async readings(): Promise<Reading[]> {
+    if (this.preview) return previewReadings(this.last);
+    return invoke<Reading[]>("readings");
+  }
+}
+
+export const monitor = new Monitor();
+
+export function fanRpm(s: Snapshot | null, id: string): number | undefined {
+  return s?.fans?.find((f) => f.id === id)?.rpm;
+}
+
+// ── Preview feed ────────────────────────────────────────────────────────────
+
+function startPreviewFeed(emit: (e: BridgeEvent) => void) {
+  const boot = [
+    "ESP-ROM:esp32s3-20210327",
+    "I (24) boot: ESP-IDF v6.1 2nd stage bootloader",
+    "I (810) board_display: Dual GC9A01 ready (L:+90 CCW, R:+90 CW)",
+    "I (890) ui_watch: Watch UI created",
+    "I (900) metrics_io: Reading snapshot JSON from USB serial",
+    "I (900) dualeye: Watch UI ready, waiting for USB metrics",
+  ];
+  setTimeout(() => emit({ kind: "connected", port: "/dev/ttyACM0" }), 600);
+  boot.forEach((line, i) => setTimeout(() => emit({ kind: "board_log", line }), 900 + i * 90));
+
+  const t0 = performance.now();
+  const wave = (t: number, period: number, phase = 0) => Math.sin((t / period) * Math.PI * 2 + phase);
+  setTimeout(() => {
+    setInterval(() => {
+      const t = (performance.now() - t0) / 1000;
+      // A slow "workload" envelope with bursts so every colour state shows up.
+      const burst = Math.max(0, wave(t, 47)) ** 3;
+      const cpuLoad = clamp(6 + 30 * burst + 8 * Math.abs(wave(t, 5.3)) + Math.random() * 4, 0, 100);
+      const gpuLoad = clamp(3 + 92 * Math.max(0, wave(t, 31, 1.2)) ** 2 + Math.random() * 3, 0, 100);
+      const snapshot: Snapshot = {
+        v: 1,
+        ts: Math.floor(Date.now() / 1000),
+        cpu: {
+          temp_c: r1(40 + cpuLoad * 0.48 + wave(t, 13) * 1.5),
+          load_pct: r1(cpuLoad),
+          clock_mhz: Math.round(900 + cpuLoad * 42 + Math.random() * 120),
+          power_w: r1(9 + cpuLoad * 1.6),
+        },
+        gpu: {
+          temp_c: r1(34 + gpuLoad * 0.5),
+          load_pct: r1(gpuLoad),
+          clock_mhz: gpuLoad > 8 ? Math.round(1400 + gpuLoad * 5) : 210,
+          power_w: r1(21 + gpuLoad * 3.3),
+        },
+        fans: [
+          { id: "cpu", rpm: Math.round(3780 + cpuLoad * 9 + Math.random() * 40) },
+          { id: "gpu", rpm: gpuLoad > 25 ? Math.round(900 + gpuLoad * 14) : 0 },
+        ],
+      };
+      emit({ kind: "snapshot", snapshot, sent: true });
+      const line = `I (${Math.round(t * 1000 + 2000)}) metrics_io: cpu ${Math.round(snapshot.cpu!.temp_c!)}C gpu ${Math.round(snapshot.gpu!.temp_c!)}C`;
+      emit({ kind: "board_log", line });
+    }, 1000);
+  }, 2600);
+}
+
+function previewReadings(s: Snapshot | null): Reading[] {
+  const c = s?.cpu ?? {};
+  const g = s?.gpu ?? {};
+  const out: Reading[] = [
+    { source: "coretemp (hwmon4)", label: "Package id 0", value: (c.temp_c ?? 40) + 2, unit: "°C" },
+  ];
+  [0, 4, 12, 13, 14, 15, 16, 20].forEach((core, i) =>
+    out.push({ source: "coretemp (hwmon4)", label: `Core ${core}`, value: (c.temp_c ?? 40) - 1 + (i % 3), unit: "°C" }),
+  );
+  out.push(
+    { source: "nct6799 (hwmon6)", label: "SYSTIN", value: 35, unit: "°C" },
+    { source: "nct6799 (hwmon6)", label: "CPUTIN", value: 37, unit: "°C" },
+    { source: "nct6799 (hwmon6)", label: "fan1", value: 841, unit: "RPM" },
+    { source: "nct6799 (hwmon6)", label: "fan2", value: 561, unit: "RPM" },
+    { source: "nct6799 (hwmon6)", label: "fan7", value: fanRpm(s, "cpu") ?? 3813, unit: "RPM" },
+    { source: "nvml:0 NVIDIA GeForce RTX 3090", label: "GPU Temp", value: g.temp_c ?? 34, unit: "°C" },
+    { source: "nvml:0 NVIDIA GeForce RTX 3090", label: "GPU Load", value: g.load_pct ?? 0, unit: "%" },
+    { source: "nvml:0 NVIDIA GeForce RTX 3090", label: "Power", value: g.power_w ?? 21, unit: "W" },
+  );
+  return out;
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const r1 = (v: number) => Math.round(v * 10) / 10;

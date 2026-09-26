@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a1c20"/>
+      <stop offset="1" stop-color="#050607"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#c4f06a" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#c4f06a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#c86cf0" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#c86cf0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="210" fill="url(#bg)"/>
+  <rect x="64.5" y="64.5" width="895" height="895" rx="209.5" fill="none" stroke="#ffffff" stroke-opacity="0.1" stroke-width="3"/>
+  <circle cx="330" cy="512" r="260" fill="url(#glowA)"/>
+  <circle cx="694" cy="512" r="260" fill="url(#glowB)"/>
+  <rect x="420" y="452" width="184" height="120" rx="14" fill="#15171a"/>
+  <g>
+    <circle cx="330" cy="512" r="176" fill="#000" stroke="#2a2d31" stroke-width="10"/>
+    <circle cx="330" cy="512" r="140" fill="none" stroke="#163012" stroke-width="34"/>
+    <circle cx="330" cy="512" r="140" fill="none" stroke="#c4f06a" stroke-width="34" stroke-linecap="round" stroke-dasharray="560 880" transform="rotate(-90 330 512)"/>
+  </g>
+  <g>
+    <circle cx="694" cy="512" r="176" fill="#000" stroke="#2a2d31" stroke-width="10"/>
+    <circle cx="694" cy="512" r="140" fill="none" stroke="#2a1238" stroke-width="34"/>
+    <circle cx="694" cy="512" r="140" fill="none" stroke="#c86cf0" stroke-width="34" stroke-linecap="round" stroke-dasharray="360 880" transform="rotate(-90 694 512)"/>
+  </g>
+</svg>

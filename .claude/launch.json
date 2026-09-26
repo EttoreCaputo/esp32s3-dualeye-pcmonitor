@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dualeye-ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "host/dualeye-app", "run", "dev"],
+      "port": 1420
+    }
+  ]
+}

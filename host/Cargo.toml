@@ -1,0 +1,5 @@
+[workspace]
+resolver = "3"
+members = ["dualeye-core", "dualeye-cli", "dualeye-app/src-tauri"]
+# The GUI needs WebKitGTK/WebView2 to build; keep plain `cargo build` to the CLI.
+default-members = ["dualeye-core", "dualeye-cli"]
