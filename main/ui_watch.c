@@ -37,9 +37,6 @@ LV_FONT_DECLARE(lv_font_fan_16)
 #define USAGE_ARC_SIZE 216
 #define RING_GAP 32
 #define ARC_WIDTH 13
-/* Plus face: the memory bar under the load row. */
-#define MEM_BAR_WIDTH 96
-#define MEM_BAR_HEIGHT 6
 
 static const char *TAG = "ui_watch";
 
@@ -48,8 +45,9 @@ typedef struct {
     lv_obj_t *label;
 } ui_title_t;
 
-/* Temperature, clock, power, load ring and fan. The plus face adds a RAM or
- * VRAM bar below; classic leaves the mem_* fields NULL. */
+/* Temperature, clock, power, load ring and fan. The plus and bar faces add a
+ * RAM or VRAM bar below (plus with its name and GiB); fields a face doesn't
+ * have stay NULL. */
 typedef struct {
     lv_obj_t *root;
     lv_obj_t *usage_arc;
@@ -85,7 +83,22 @@ typedef struct {
     ui_classic_t classic;
     ui_rings_t rings;
     ui_classic_t plus;
+    ui_classic_t bar;
 } ui_screen_t;
+
+/* How the classic-based faces differ: column offset, gap under the title and
+ * the memory bar (none when bar_w is 0). */
+typedef struct {
+    int y_ofs;
+    int title_gap;
+    int bar_w;
+    int bar_h;
+    bool mem_text;
+} ui_classic_layout_t;
+
+static const ui_classic_layout_t LAYOUT_CLASSIC = {.y_ofs = 2, .title_gap = 10};
+static const ui_classic_layout_t LAYOUT_PLUS = {.y_ofs = -10, .title_gap = 8, .bar_w = 96, .bar_h = 6, .mem_text = true};
+static const ui_classic_layout_t LAYOUT_BAR = {.y_ofs = -3, .title_gap = 10, .bar_w = 72, .bar_h = 4};
 
 /* Label/value colours and the warning icon, from temperature and link state. */
 typedef struct {
@@ -208,10 +221,10 @@ static void set_title(ui_title_t *title, uint32_t color, bool warn)
     }
 }
 
-static lv_obj_t *create_bar(lv_obj_t *parent, uint32_t color, uint32_t track)
+static lv_obj_t *create_bar(lv_obj_t *parent, int w, int h, uint32_t color, uint32_t track)
 {
     lv_obj_t *bar = lv_bar_create(parent);
-    lv_obj_set_size(bar, MEM_BAR_WIDTH, MEM_BAR_HEIGHT);
+    lv_obj_set_size(bar, w, h);
     lv_bar_set_range(bar, 0, 100);
     lv_bar_set_value(bar, 0, LV_ANIM_OFF);
     lv_obj_set_style_radius(bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
@@ -224,13 +237,13 @@ static lv_obj_t *create_bar(lv_obj_t *parent, uint32_t color, uint32_t track)
     return bar;
 }
 
-static void create_classic(ui_screen_t *ui, ui_classic_t *f, bool with_mem)
+static void create_classic(ui_screen_t *ui, ui_classic_t *f, const ui_classic_layout_t *layout)
 {
     f->root = make_face(ui->screen);
     f->usage_arc = create_arc(f->root, USAGE_ARC_SIZE, ui->accent, ui->track);
 
-    lv_obj_t *col = create_column(f->root, with_mem ? -10 : 2);
-    create_title(&f->title, col, ui->name, ui->accent, with_mem ? 8 : 10);
+    lv_obj_t *col = create_column(f->root, layout->y_ofs);
+    create_title(&f->title, col, ui->name, ui->accent, layout->title_gap);
 
     f->value = create_text(col, "—", &lv_font_montserrat_bold_48, COLOR_TEXT);
     lv_obj_set_style_margin_bottom(f->value, 2, 0);
@@ -249,11 +262,14 @@ static void create_classic(ui_screen_t *ui, ui_classic_t *f, bool with_mem)
     create_fan(load_row);
     f->rpm = create_text(load_row, "--", &lv_font_montserrat_14, COLOR_TEXT);
 
-    if (!with_mem) {
+    if (layout->bar_w == 0) {
         return;
     }
-    f->mem_bar = create_bar(col, COLOR_MEM, COLOR_MEM_TRACK);
+    f->mem_bar = create_bar(col, layout->bar_w, layout->bar_h, COLOR_MEM, COLOR_MEM_TRACK);
     lv_obj_set_style_margin_top(f->mem_bar, 6, 0);
+    if (!layout->mem_text) {
+        return;
+    }
 
     lv_obj_t *mem_row = make_flex(col, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(mem_row, 6, 0);
@@ -292,9 +308,10 @@ static void create_screen(ui_screen_t *ui, lv_display_t *disp, const char *name,
     ui->screen = lv_display_get_screen_active(disp);
     style_screen_black(ui->screen);
 
-    create_classic(ui, &ui->classic, false);
+    create_classic(ui, &ui->classic, &LAYOUT_CLASSIC);
     create_rings(ui);
-    create_classic(ui, &ui->plus, true);
+    create_classic(ui, &ui->plus, &LAYOUT_PLUS);
+    create_classic(ui, &ui->bar, &LAYOUT_BAR);
     lv_obj_remove_flag(ui->classic.root, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -367,16 +384,18 @@ static uint32_t placeholder_title(metrics_ui_state_t state)
  * when nearly full, like a warm temperature. */
 static void update_mem_bar(ui_classic_t *f, const metrics_temp_t *temp)
 {
-    if (!temp->mem_valid) {
-        lv_bar_set_value(f->mem_bar, 0, LV_ANIM_OFF);
-        lv_label_set_text(f->mem_value, "-- GB");
-        set_text_color(f->mem_name, COLOR_TEXT_DIM);
-        return;
-    }
     int pct = mem_pct(temp);
     uint32_t color = pct >= MEM_HIGH_PCT ? COLOR_WARM : COLOR_MEM;
     lv_bar_set_value(f->mem_bar, pct, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(f->mem_bar, lv_color_hex(color), LV_PART_INDICATOR);
+    if (f->mem_value == NULL) {
+        return;
+    }
+    if (!temp->mem_valid) {
+        lv_label_set_text(f->mem_value, "-- GB");
+        set_text_color(f->mem_name, COLOR_TEXT_DIM);
+        return;
+    }
     set_text_color(f->mem_name, color);
 
     char text[24];
@@ -477,6 +496,7 @@ static void show_face(ui_screen_t *ui, metrics_face_t face)
         [METRICS_FACE_CLASSIC] = ui->classic.root,
         [METRICS_FACE_RINGS] = ui->rings.root,
         [METRICS_FACE_PLUS] = ui->plus.root,
+        [METRICS_FACE_BAR] = ui->bar.root,
     };
     for (int i = 0; i < METRICS_FACE_COUNT; i++) {
         if (i == (int) face) {
@@ -500,6 +520,9 @@ static void update_screen(ui_screen_t *ui, metrics_face_t face, const metrics_te
         break;
     case METRICS_FACE_PLUS:
         update_classic(ui, &ui->plus, temp, state, fan_rpm);
+        break;
+    case METRICS_FACE_BAR:
+        update_classic(ui, &ui->bar, temp, state, fan_rpm);
         break;
     default:
         update_classic(ui, &ui->classic, temp, state, fan_rpm);

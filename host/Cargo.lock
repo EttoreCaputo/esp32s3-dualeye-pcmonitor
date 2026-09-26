@@ -1041,6 +1041,7 @@ dependencies = [
  "dualeye-core",
  "serde",
  "serde_json",
+ "sysinfo",
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",
@@ -1059,7 +1060,10 @@ dependencies = [
 name = "dualeye-core"
 version = "0.1.0"
 dependencies = [
+ "core-foundation",
  "flate2",
+ "io-kit-sys",
+ "mach2",
  "nvml-wrapper",
  "serde",
  "serde_json",

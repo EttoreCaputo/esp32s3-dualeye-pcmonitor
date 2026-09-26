@@ -10,9 +10,8 @@
     COLOR,
     DEVICES,
     FAN_PATH,
+    CLASSIC_LAYOUT,
     LCD,
-    MEM_BAR_HEIGHT,
-    MEM_BAR_WIDTH,
     RING_GAP,
     USAGE_ARC_SIZE,
     WARN_PATH,
@@ -97,9 +96,9 @@
         </div>
       </div>
     {:else}
-      {@const plus = screen.face === "plus"}
-      <div class="col" style:--y={plus ? "-10px" : "2px"}>
-        {@render title(plus ? 8 : 10)}
+      {@const layout = CLASSIC_LAYOUT[screen.face]}
+      <div class="col" style:--y="{layout.y}px">
+        {@render title(layout.titleGap)}
         <div class="value" style:color={screen.valueColor} style:margin-bottom="2px">{screen.value}</div>
         <div class="row dim" style:gap="8px" style:margin-top="4px">
           <span>{screen.clock}</span>
@@ -110,11 +109,11 @@
           <svg class="fan" viewBox="0 0 512 512" aria-hidden="true"><path fill={COLOR.text} d={FAN_PATH} /></svg>
           <span>{screen.rpm}</span>
         </div>
-        {#if plus}
+        {#if layout.barW > 0}
           <div
             class="bar"
-            style:width="{MEM_BAR_WIDTH}px"
-            style:height="{MEM_BAR_HEIGHT}px"
+            style:width="{layout.barW}px"
+            style:height="{layout.barH}px"
             style:background={COLOR.memTrack}
             style:margin-top="6px"
           >
@@ -122,6 +121,8 @@
               <div class="bar-fill" style:width="{screen.memPct}%" style:background={screen.barColor}></div>
             {/if}
           </div>
+        {/if}
+        {#if layout.memText}
           <div class="row" style:gap="6px" style:margin-top="5px">
             <span class="title" style:color={screen.barColor}>{screen.memName}</span>
             <span class="dim">{screen.memValue}</span>

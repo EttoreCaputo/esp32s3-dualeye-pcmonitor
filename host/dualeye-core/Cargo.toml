@@ -19,6 +19,12 @@ ureq = { version = "3.4.2", optional = true }
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 nvml-wrapper = "0.13.0"
 
+# SMC and IOAccelerator for the Mac's GPU; already in the tree through serialport.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
+io-kit-sys = "0.4.1"
+mach2 = "0.4.3"
+
 [dev-dependencies]
 tempfile = "3.27.0"
 

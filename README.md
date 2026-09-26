@@ -45,10 +45,10 @@ The binary ends up in `host/target/release/dualeye` (`dualeye.exe` on Windows) a
 | CPU power | RAPL (see below) | — | — |
 | NVIDIA GPU (temp, load, clock, power, fan RPM) | NVML | NVML | — |
 | AMD GPU | hwmon `amdgpu` | — | — |
-| Apple GPU temp | — | — | IOHID |
+| Mac GPU (temp, load, memory) | — | — | SMC (`Tg*` keys on Apple Silicon, `TG*` on Intel), IOAccelerator |
 | Fans | hwmon (`cpu` = fastest board fan, `gpu` = fastest GPU fan) | — | — |
 | RAM | ✓ | ✓ | ✓ |
-| VRAM | NVML, `amdgpu` (`mem_info_vram_*`) | NVML | — |
+| VRAM | NVML, `amdgpu` (`mem_info_vram_*`) | NVML | IOAccelerator (Apple Silicon: GPU share of the unified RAM) |
 
 Missing values are just left out of the snapshot; the board shows what it gets.
 
@@ -66,13 +66,14 @@ sudo systemd-tmpfiles --create /etc/tmpfiles.d/dualeye-rapl.conf
 
 ## Watch faces
 
-Each screen shows one of three faces, chosen independently (left = CPU, right = GPU):
+Each screen shows one of four faces, chosen independently (left = CPU, right = GPU):
 
 | Face | Shows |
 |------|-------|
 | `classic` | Temperature, clock, power, fan RPM; load on the ring (the default) |
 | `rings` | Three rings, outside in: load, temperature (cyan, orange from 80 °C, red from 90 °C), memory; temperature and both percentages in the middle |
 | `plus` | Classic, plus a bar under the load and fan row for RAM (left) or VRAM (right) with GiB used/total; orange from 90 % |
+| `bar` | Classic with a smaller RAM/VRAM bar under the load and fan row, no numbers |
 
 Pick them in the app (Settings → **Display**, saved across restarts) or with `--cpu-face` / `--gpu-face` on the CLI. The host sends the choice in every line, so the board switches on the next snapshot and needs no storage of its own; a line without `face` shows `classic`.
 
@@ -161,13 +162,14 @@ Plain `cargo` commands in `host/` only touch `dualeye-core` and `dualeye-cli` (t
 
 ### Watch faces
 
-Each screen shows one of three faces, chosen independently (left = CPU, right = GPU):
+Each screen shows one of four faces, chosen independently (left = CPU, right = GPU):
 
 | Face | Shows |
 |------|-------|
 | `classic` | Temperature, clock, power, fan RPM; load on the ring (the default) |
 | `rings` | Three rings, outside in: load, temperature (cyan, orange from 80 °C, red from 90 °C), memory; temperature and both percentages in the middle |
 | `plus` | Classic, plus a bar under the load and fan row for RAM (left) or VRAM (right) with GiB used/total; orange from 90 % |
+| `bar` | Classic with a smaller RAM/VRAM bar under the load and fan row, no numbers |
 
 Pick them in the app (Settings → **Display**, saved across restarts) or with `--cpu-face` / `--gpu-face` on the CLI. The host sends the choice in every line, so the board switches on the next snapshot and needs no storage of its own; a line without `face` shows `classic`.
 

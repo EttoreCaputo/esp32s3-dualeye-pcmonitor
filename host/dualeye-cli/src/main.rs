@@ -29,10 +29,10 @@ struct Args {
     /// Seconds to wait after opening the port before the first write
     #[arg(long, default_value_t = 2.0)]
     boot_wait: f64,
-    /// Watch face on the left (CPU) screen: classic, rings or plus
+    /// Watch face on the left (CPU) screen: classic, rings, plus or bar
     #[arg(long, default_value = "classic")]
     cpu_face: Face,
-    /// Watch face on the right (GPU) screen: classic, rings or plus
+    /// Watch face on the right (GPU) screen: classic, rings, plus or bar
     #[arg(long, default_value = "classic")]
     gpu_face: Face,
     /// Print one snapshot as JSON and exit, without opening the port

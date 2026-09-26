@@ -7,15 +7,17 @@
 //! | CPU power       | RAPL (powercap)             | —                        | —                  |
 //! | NVIDIA GPU      | NVML                        | NVML                     | —                  |
 //! | AMD GPU         | hwmon (amdgpu)              | —                        | —                  |
-//! | Other GPU temp  | —                           | —                        | SMC / IOHID        |
+//! | Apple/Mac GPU   | —                           | —                        | SMC + IOAccelerator|
 //! | Fans            | hwmon                       | —                        | —                  |
 //! | RAM             | sysinfo                     | sysinfo                  | sysinfo            |
-//! | VRAM            | NVML, amdgpu `mem_info_*`   | NVML                     | —                  |
+//! | VRAM            | NVML, amdgpu `mem_info_*`   | NVML                     | IOAccelerator      |
 
 #[cfg(not(target_os = "linux"))]
 mod components;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod nvidia;
 
@@ -53,6 +55,8 @@ pub struct Collector {
     platform: components::ComponentSensors,
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     nvidia: Option<nvidia::Nvidia>,
+    #[cfg(target_os = "macos")]
+    mac_gpu: macos::MacGpu,
 }
 
 impl Collector {
@@ -66,6 +70,8 @@ impl Collector {
             platform: components::ComponentSensors::new(),
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             nvidia: nvidia::Nvidia::init(),
+            #[cfg(target_os = "macos")]
+            mac_gpu: macos::MacGpu::new(),
         }
     }
 
@@ -83,6 +89,8 @@ impl Collector {
             platform.gpu = gpu;
             platform.gpu_fans = fans;
         }
+        #[cfg(target_os = "macos")]
+        self.mac_gpu.fill(&mut platform.gpu, self.sys.total_memory());
 
         let cpus = self.sys.cpus();
         let clock = if cpus.is_empty() {
@@ -134,6 +142,8 @@ impl Collector {
         if let Some(nvidia) = &self.nvidia {
             out.extend(nvidia.readings());
         }
+        #[cfg(target_os = "macos")]
+        out.extend(self.mac_gpu.readings());
         out
     }
 }

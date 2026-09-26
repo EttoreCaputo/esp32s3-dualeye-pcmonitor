@@ -54,16 +54,19 @@ pub enum Face {
     Rings,
     /// Classic plus a RAM (left screen) or VRAM (right screen) bar.
     Plus,
+    /// Classic plus a smaller memory bar, without the numbers.
+    Bar,
 }
 
 impl Face {
-    pub const ALL: [Face; 3] = [Face::Classic, Face::Rings, Face::Plus];
+    pub const ALL: [Face; 4] = [Face::Classic, Face::Rings, Face::Plus, Face::Bar];
 
     pub fn name(self) -> &'static str {
         match self {
             Face::Classic => "classic",
             Face::Rings => "rings",
             Face::Plus => "plus",
+            Face::Bar => "bar",
         }
     }
 }

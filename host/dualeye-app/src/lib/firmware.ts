@@ -7,8 +7,6 @@ export const LCD = 240;
 export const USAGE_ARC_SIZE = 216;
 export const RING_GAP = 32;
 export const ARC_WIDTH = 13;
-export const MEM_BAR_WIDTH = 96;
-export const MEM_BAR_HEIGHT = 6;
 export const TEMP_WARM_C = 80;
 export const TEMP_HOT_C = 90;
 export const MEM_HIGH_PCT = 90;
@@ -33,14 +31,22 @@ export const DEVICES = {
 export type DeviceId = keyof typeof DEVICES;
 
 /** `metrics_face_t`; the names are what goes on the wire. */
-export type Face = "classic" | "rings" | "plus";
+export type Face = "classic" | "rings" | "plus" | "bar";
 export type Faces = Record<DeviceId, Face>;
 export const DEFAULT_FACES: Faces = { cpu: "classic", gpu: "classic" };
 export const FACES: { id: Face; name: string; blurb: string }[] = [
   { id: "classic", name: "Classic", blurb: "Temperature, clock, power, fan" },
   { id: "rings", name: "Rings", blurb: "Load, temperature and memory rings" },
   { id: "plus", name: "Plus", blurb: "Classic with a RAM or VRAM bar" },
+  { id: "bar", name: "Bar", blurb: "Classic with a slim memory bar, no numbers" },
 ];
+
+/** `ui_classic_layout_t` for the classic-based faces; no bar when `barW` is 0. */
+export const CLASSIC_LAYOUT: Record<Exclude<Face, "rings">, { y: number; titleGap: number; barW: number; barH: number; memText: boolean }> = {
+  classic: { y: 2, titleGap: 10, barW: 0, barH: 0, memText: false },
+  plus: { y: -10, titleGap: 8, barW: 96, barH: 6, memText: true },
+  bar: { y: -3, titleGap: 10, barW: 72, barH: 4, memText: false },
+};
 
 /** The text and colours one round screen shows, as the `update_*` functions in ui_watch.c compute them. */
 export type Screen = {
@@ -63,7 +69,7 @@ export type Screen = {
   valueColor: string;
   usageColor: string;
   memColor: string;
-  /** The plus face's bar and its RAM/VRAM name: orange when nearly full. */
+  /** The memory bar and the plus face's RAM/VRAM name: orange when nearly full. */
   barColor: string;
   warn: boolean;
 };
@@ -138,7 +144,7 @@ export function screenFor(
     value: `${cInt(temp)}°`,
     clock: `${((m!.clock_mhz ?? 0) / 1000).toFixed(1)} GHz`,
     watts: `${(m!.power_w ?? 0).toFixed(0)} W`,
-    // Classic and plus print the load with "%.0f", rings the clamped ring value.
+    // The classic-based faces print the load with "%.0f", rings the clamped ring value.
     usage: face === "rings" ? pctText(usagePct) : `${usage.toFixed(0)}%`,
     rpm: fan === undefined ? "--" : String(fan),
     mem: pctText(memPct),

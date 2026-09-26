@@ -21,11 +21,12 @@ typedef enum {
     METRICS_UI_ERROR,
 } metrics_ui_state_t;
 
-/** Watch face of one screen. Names on the wire: classic, rings, plus. */
+/** Watch face of one screen. Names on the wire: classic, rings, plus, bar. */
 typedef enum {
     METRICS_FACE_CLASSIC = 0,
     METRICS_FACE_RINGS,
     METRICS_FACE_PLUS,
+    METRICS_FACE_BAR,
     METRICS_FACE_COUNT,
 } metrics_face_t;
 

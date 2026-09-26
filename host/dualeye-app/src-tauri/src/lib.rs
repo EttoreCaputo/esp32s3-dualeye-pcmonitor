@@ -3,11 +3,14 @@
 //! freshly loaded webview can catch up) and forwarded to the UI as `bridge`.
 //!
 //! Closing the window only hides it; the tray icon brings it back or quits, and
-//! launching the app again just shows the running instance.
+//! launching the app again shows the running instance, unless a newer build
+//! was installed meanwhile: then that one takes over (see `instances`).
 //!
 //! Identifying and flashing the board go through esptool, which the app sets
 //! up by itself on first use (Python + virtualenv in its data folder); the
 //! bridge is stopped meanwhile so esptool can own the port, then started again.
+
+mod instances;
 
 use std::collections::VecDeque;
 use std::fs;
@@ -320,11 +323,27 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    instances::wait_for_predecessor();
     tauri::Builder::default()
         // Closing the window leaves the app in the tray; launching it again must
         // not start a second bridge fighting over the serial port.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if !instances::on_relaunch(app, args.first().map(String::as_str)) {
+                show_main(app);
+            }
+        }))
         .setup(|app| {
+            // We hold the single instance now; older copies must let go of the port.
+            instances::stop_strays();
+            if let Some(me) = instances::SelfBinary::capture(app.handle()) {
+                app.manage(me);
+            }
+            instances::watch_for_updates(app.handle().clone());
+            if instances::start_hidden() {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.hide();
+                }
+            }
             let settings_path = app.path().app_config_dir().ok().map(|d| d.join("settings.json"));
             let esptool_dir = app.path().app_local_data_dir()?.join("esptool");
             let settings: Settings = settings_path
@@ -362,12 +381,20 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![status, list_ports, set_port, set_faces, readings, firmware_info, identify_board, flash_board])
         .build(tauri::generate_context!())
         .expect("failed to build the DualEye app")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app, event| match event {
+            tauri::RunEvent::Exit => {
                 // Release the serial port before the process goes away.
                 if let Some(state) = app.try_state::<AppState>() {
                     state.bridge.lock().unwrap().take();
                 }
             }
+            // macOS: the Dock icon, or opening the app while it runs.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                if !instances::on_relaunch(app, None) {
+                    show_main(app);
+                }
+            }
+            _ => {}
         });
 }
