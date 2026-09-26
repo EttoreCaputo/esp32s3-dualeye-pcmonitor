@@ -7,7 +7,6 @@ idf_component_register(SRCS "main.c"
                             "ui_watch.c"
                             "fonts/lv_font_montserrat_bold_12.c"
                             "fonts/lv_font_montserrat_bold_48.c"
-                            "fonts/lv_font_montserrat_bold_72.c"
                             "fonts/lv_font_fan_16.c"
                        INCLUDE_DIRS "."
                        REQUIRES esp_driver_gpio esp_driver_spi esp_lcd esp_lcd_gc9a01 esp_timer lvgl)

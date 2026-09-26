@@ -7,8 +7,8 @@ export const LCD = 240;
 export const USAGE_ARC_SIZE = 216;
 export const RING_GAP = 32;
 export const ARC_WIDTH = 13;
-export const GAUGE_ROTATION = 135;
-export const GAUGE_SWEEP = 270;
+export const MEM_BAR_WIDTH = 96;
+export const MEM_BAR_HEIGHT = 6;
 export const TEMP_WARM_C = 80;
 export const TEMP_HOT_C = 90;
 export const MEM_HIGH_PCT = 90;
@@ -33,14 +33,13 @@ export const DEVICES = {
 export type DeviceId = keyof typeof DEVICES;
 
 /** `metrics_face_t`; the names are what goes on the wire. */
-export type Face = "classic" | "rings" | "memory" | "gauge";
+export type Face = "classic" | "rings" | "plus";
 export type Faces = Record<DeviceId, Face>;
 export const DEFAULT_FACES: Faces = { cpu: "classic", gpu: "classic" };
 export const FACES: { id: Face; name: string; blurb: string }[] = [
   { id: "classic", name: "Classic", blurb: "Temperature, clock, power, fan" },
   { id: "rings", name: "Rings", blurb: "Load, temperature and memory rings" },
-  { id: "memory", name: "Memory", blurb: "RAM or VRAM in use" },
-  { id: "gauge", name: "Gauge", blurb: "Large temperature on a dial" },
+  { id: "plus", name: "Plus", blurb: "Classic with a RAM or VRAM bar" },
 ];
 
 /** The text and colours one round screen shows, as the `update_*` functions in ui_watch.c compute them. */
@@ -54,7 +53,8 @@ export type Screen = {
   usage: string;
   rpm: string;
   mem: string;
-  memTotal: string;
+  memName: string;
+  memValue: string;
   usagePct: number;
   tempPct: number;
   memPct: number;
@@ -63,6 +63,8 @@ export type Screen = {
   valueColor: string;
   usageColor: string;
   memColor: string;
+  /** The plus face's bar and its RAM/VRAM name: orange when nearly full. */
+  barColor: string;
   warn: boolean;
 };
 
@@ -83,24 +85,23 @@ export function screenFor(
   const accent = dev.accent;
   const mem = m?.mem && m.mem.total_mb > 0 ? m.mem : undefined;
   const memPct = mem ? pct(mem.used_mb, mem.total_mb) : undefined;
-  const title = face === "memory" ? dev.memTitle : dev.title;
   const base = {
     face,
-    title,
+    title: dev.title,
+    memName: dev.memTitle,
     clock: "-- GHz",
     watts: "-- W",
     usage: "--%",
     rpm: "--",
     mem: "--%",
-    memTotal: "of -- GB",
+    memValue: "-- GB",
     usagePct: 0,
     tempPct: 0,
     memPct: 0,
     tempRing: COLOR.cyan,
     memColor: COLOR.mem,
   };
-  // The memory face only needs memory; the others need a temperature.
-  if (waiting || (face === "memory" ? mem === undefined : m?.temp_c === undefined)) {
+  if (waiting || m?.temp_c === undefined) {
     return {
       ...base,
       placeholder: true,
@@ -109,33 +110,8 @@ export function screenFor(
       valueColor: COLOR.textDim,
       usageColor: COLOR.textDim,
       memColor: COLOR.textDim,
+      barColor: COLOR.textDim,
       warn: false,
-    };
-  }
-
-  if (face === "memory") {
-    const p = memPct!;
-    let labelColor: string = accent;
-    let valueColor: string = COLOR.text;
-    let warn = false;
-    if (p >= MEM_HIGH_PCT) {
-      labelColor = valueColor = COLOR.warm;
-      warn = true;
-    } else if (stale) {
-      labelColor = COLOR.stale;
-      valueColor = COLOR.textDim;
-    }
-    return {
-      ...base,
-      placeholder: false,
-      value: (mem!.used_mb / 1024).toFixed(1),
-      mem: pctText(p),
-      memTotal: `of ${(mem!.total_mb / 1024).toFixed(0)} GB`,
-      memPct: p,
-      labelColor,
-      valueColor,
-      usageColor: accent,
-      warn,
     };
   }
 
@@ -162,10 +138,11 @@ export function screenFor(
     value: `${cInt(temp)}°`,
     clock: `${((m!.clock_mhz ?? 0) / 1000).toFixed(1)} GHz`,
     watts: `${(m!.power_w ?? 0).toFixed(0)} W`,
-    // Classic prints the load with "%.0f", the other faces the clamped ring value.
-    usage: face === "classic" ? `${usage.toFixed(0)}%` : pctText(usagePct),
+    // Classic and plus print the load with "%.0f", rings the clamped ring value.
+    usage: face === "rings" ? pctText(usagePct) : `${usage.toFixed(0)}%`,
     rpm: fan === undefined ? "--" : String(fan),
     mem: pctText(memPct),
+    memValue: mem ? `${(mem.used_mb / 1024).toFixed(1)}/${(mem.total_mb / 1024).toFixed(0)} GB` : "-- GB",
     usagePct,
     tempPct: pct(temp, TEMP_MAX_C),
     memPct: memPct ?? 0,
@@ -174,6 +151,7 @@ export function screenFor(
     valueColor,
     usageColor: accent,
     memColor: memPct === undefined ? COLOR.textDim : COLOR.mem,
+    barColor: memPct === undefined ? COLOR.textDim : memPct >= MEM_HIGH_PCT ? COLOR.warm : COLOR.mem,
     warn,
   };
 }

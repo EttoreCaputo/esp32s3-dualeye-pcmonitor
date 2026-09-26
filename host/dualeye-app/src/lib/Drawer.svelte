@@ -260,6 +260,9 @@
             <section class="alert error">
               <h3>esptool failed</h3>
               <p class="mono">{monitor.jobError}</p>
+              {#if /busy|Errno 16/i.test(monitor.jobError)}
+                <p class="hint">Another program has the port open: a second DualEye window, <code>idf.py monitor</code> or the <code>dualeye</code> CLI. Close it and try again.</p>
+              {/if}
             </section>
           {:else if monitor.flashedAt && monitor.job === "idle"}
             <p class="ok">Flashed and verified. The board is rebooting into the new firmware.</p>

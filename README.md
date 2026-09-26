@@ -30,7 +30,7 @@ cd host
 cargo run --release              # auto-detects the board (USB 303a:xxxx) and streams
 cargo run --release -- --once    # print one snapshot, no serial
 cargo run --release -- --sensors # every raw sensor the backends can see
-cargo run --release -- --cpu-face rings --gpu-face memory
+cargo run --release -- --cpu-face rings --gpu-face plus
 cargo run --release -- --help
 ```
 
@@ -66,14 +66,13 @@ sudo systemd-tmpfiles --create /etc/tmpfiles.d/dualeye-rapl.conf
 
 ## Watch faces
 
-Each screen shows one of four faces, chosen independently (left = CPU, right = GPU):
+Each screen shows one of three faces, chosen independently (left = CPU, right = GPU):
 
 | Face | Shows |
 |------|-------|
 | `classic` | Temperature, clock, power, fan RPM; load on the ring (the default) |
 | `rings` | Three rings, outside in: load, temperature (cyan, orange from 80 °C, red from 90 °C), memory; temperature and both percentages in the middle |
-| `memory` | RAM (left) or VRAM (right): GiB in use, total and share, which also fills the ring; orange from 90 % |
-| `gauge` | Temperature in large type on a 270° dial, load below |
+| `plus` | Classic, plus a bar under the load and fan row for RAM (left) or VRAM (right) with GiB used/total; orange from 90 % |
 
 Pick them in the app (Settings → **Display**, saved across restarts) or with `--cpu-face` / `--gpu-face` on the CLI. The host sends the choice in every line, so the board switches on the next snapshot and needs no storage of its own; a line without `face` shows `classic`.
 
@@ -162,14 +161,13 @@ Plain `cargo` commands in `host/` only touch `dualeye-core` and `dualeye-cli` (t
 
 ### Watch faces
 
-Each screen shows one of four faces, chosen independently (left = CPU, right = GPU):
+Each screen shows one of three faces, chosen independently (left = CPU, right = GPU):
 
 | Face | Shows |
 |------|-------|
 | `classic` | Temperature, clock, power, fan RPM; load on the ring (the default) |
 | `rings` | Three rings, outside in: load, temperature (cyan, orange from 80 °C, red from 90 °C), memory; temperature and both percentages in the middle |
-| `memory` | RAM (left) or VRAM (right): GiB in use, total and share, which also fills the ring; orange from 90 % |
-| `gauge` | Temperature in large type on a 270° dial, load below |
+| `plus` | Classic, plus a bar under the load and fan row for RAM (left) or VRAM (right) with GiB used/total; orange from 90 % |
 
 Pick them in the app (Settings → **Display**, saved across restarts) or with `--cpu-face` / `--gpu-face` on the CLI. The host sends the choice in every line, so the board switches on the next snapshot and needs no storage of its own; a line without `face` shows `classic`.
 
@@ -216,7 +214,7 @@ cd host/dualeye-app && npm run check
 ## Wire format
 
 ```json
-{"v":1,"ts":1790419114,"cpu":{"temp_c":40.2,"load_pct":2.8,"clock_mhz":1210,"power_w":14.6,"mem":{"used_mb":12568,"total_mb":62277}},"gpu":{"temp_c":35.0,"load_pct":0.0,"clock_mhz":210,"power_w":22.1,"mem":{"used_mb":14,"total_mb":24576}},"fans":[{"id":"cpu","rpm":3824},{"id":"gpu","rpm":0}],"face":{"cpu":"rings","gpu":"memory"}}
+{"v":1,"ts":1790419114,"cpu":{"temp_c":40.2,"load_pct":2.8,"clock_mhz":1210,"power_w":14.6,"mem":{"used_mb":12568,"total_mb":62277}},"gpu":{"temp_c":35.0,"load_pct":0.0,"clock_mhz":210,"power_w":22.1,"mem":{"used_mb":14,"total_mb":24576}},"fans":[{"id":"cpu","rpm":3824},{"id":"gpu","rpm":0}],"face":{"cpu":"rings","gpu":"plus"}}
 ```
 
 Parsed by `main/metrics_parser.c`; lines without any temperature are ignored, and the UI goes stale after 3 s without data. `mem` is in MiB: system RAM under `cpu`, VRAM under `gpu`. `face` is added by the bridge, not the sensor collector; unknown face names fall back to `classic`.

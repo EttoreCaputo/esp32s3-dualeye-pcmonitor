@@ -348,8 +348,7 @@ static metrics_face_t face_from_name(const char *name)
     static const char *const names[METRICS_FACE_COUNT] = {
         [METRICS_FACE_CLASSIC] = "classic",
         [METRICS_FACE_RINGS] = "rings",
-        [METRICS_FACE_MEMORY] = "memory",
-        [METRICS_FACE_GAUGE] = "gauge",
+        [METRICS_FACE_PLUS] = "plus",
     };
     for (int i = 0; i < METRICS_FACE_COUNT; i++) {
         if (strcmp(name, names[i]) == 0) {

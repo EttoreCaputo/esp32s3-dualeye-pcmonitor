@@ -52,21 +52,18 @@ pub enum Face {
     Classic,
     /// Three concentric rings: load, temperature, memory.
     Rings,
-    /// RAM (left screen) or VRAM (right screen) usage.
-    Memory,
-    /// A 270° temperature gauge around a large readout.
-    Gauge,
+    /// Classic plus a RAM (left screen) or VRAM (right screen) bar.
+    Plus,
 }
 
 impl Face {
-    pub const ALL: [Face; 4] = [Face::Classic, Face::Rings, Face::Memory, Face::Gauge];
+    pub const ALL: [Face; 3] = [Face::Classic, Face::Rings, Face::Plus];
 
     pub fn name(self) -> &'static str {
         match self {
             Face::Classic => "classic",
             Face::Rings => "rings",
-            Face::Memory => "memory",
-            Face::Gauge => "gauge",
+            Face::Plus => "plus",
         }
     }
 }
@@ -85,10 +82,16 @@ impl std::str::FromStr for Face {
 /// Which face each screen shows: left (`cpu`) and right (`gpu`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Faces {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "face_or_classic")]
     pub cpu: Face,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "face_or_classic")]
     pub gpu: Face,
+}
+
+/// Names this build doesn't know (such as the retired `memory` and `gauge`)
+/// read as `classic`, so an old settings file still loads.
+fn face_or_classic<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Face, D::Error> {
+    Ok(String::deserialize(d)?.parse().unwrap_or_default())
 }
 
 /// `id` is what the UI keys on: `"cpu"` (case/radiator fans) or `"gpu"`.
@@ -157,13 +160,13 @@ mod tests {
                 ..Default::default()
             },
             fans: vec![Fan { id: "cpu".into(), rpm: 3770 }],
-            face: Some(Faces { cpu: Face::Rings, gpu: Face::Memory }),
+            face: Some(Faces { cpu: Face::Rings, gpu: Face::Plus }),
         };
         assert_eq!(
             snap.to_line(),
             "{\"v\":1,\"ts\":1700000000,\"cpu\":{\"temp_c\":36.3,\"load_pct\":1.8,\"clock_mhz\":1572,\"power_w\":14.6,\
              \"mem\":{\"used_mb\":12288,\"total_mb\":31744}},\"gpu\":{\"temp_c\":31.0,\"mem\":{\"used_mb\":1024,\"total_mb\":24576}},\
-             \"fans\":[{\"id\":\"cpu\",\"rpm\":3770}],\"face\":{\"cpu\":\"rings\",\"gpu\":\"memory\"}}\n"
+             \"fans\":[{\"id\":\"cpu\",\"rpm\":3770}],\"face\":{\"cpu\":\"rings\",\"gpu\":\"plus\"}}\n"
         );
     }
 
@@ -183,9 +186,11 @@ mod tests {
 
     #[test]
     fn faces_parse_by_name() {
-        assert_eq!("gauge".parse::<Face>(), Ok(Face::Gauge));
-        assert!("round".parse::<Face>().is_err());
+        assert_eq!("plus".parse::<Face>(), Ok(Face::Plus));
+        assert!("gauge".parse::<Face>().is_err());
         let faces: Faces = serde_json::from_str("{\"gpu\":\"rings\"}").unwrap();
         assert_eq!(faces, Faces { cpu: Face::Classic, gpu: Face::Rings });
+        let old: Faces = serde_json::from_str("{\"cpu\":\"gauge\",\"gpu\":\"memory\"}").unwrap();
+        assert_eq!(old, Faces::default());
     }
 }

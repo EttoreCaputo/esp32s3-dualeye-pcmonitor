@@ -10,9 +10,9 @@
     COLOR,
     DEVICES,
     FAN_PATH,
-    GAUGE_ROTATION,
-    GAUGE_SWEEP,
     LCD,
+    MEM_BAR_HEIGHT,
+    MEM_BAR_WIDTH,
     RING_GAP,
     USAGE_ARC_SIZE,
     WARN_PATH,
@@ -80,22 +80,26 @@
 <div class="panel" class:lit style:--scale={size / LCD} style:width="{size}px" style:height="{size}px">
   <div class="fb" class:ui>
     <svg class="rings" viewBox="0 0 {LCD} {LCD}" aria-hidden="true">
-      {#if screen.face === "classic"}
-        {@render arc(USAGE_ARC_SIZE, dev.accent, dev.track, screen.usagePct)}
-      {:else if screen.face === "rings"}
-        {@render arc(USAGE_ARC_SIZE, dev.accent, dev.track, screen.usagePct)}
+      {@render arc(USAGE_ARC_SIZE, dev.accent, dev.track, screen.usagePct)}
+      {#if screen.face === "rings"}
         {@render arc(USAGE_ARC_SIZE - RING_GAP, screen.tempRing, COLOR.tempTrack, screen.tempPct)}
         {@render arc(USAGE_ARC_SIZE - 2 * RING_GAP, COLOR.mem, COLOR.memTrack, screen.memPct)}
-      {:else if screen.face === "memory"}
-        {@render arc(USAGE_ARC_SIZE, COLOR.mem, COLOR.memTrack, screen.memPct)}
-      {:else}
-        {@render arc(USAGE_ARC_SIZE, screen.tempRing, COLOR.tempTrack, screen.tempPct, GAUGE_SWEEP, GAUGE_ROTATION)}
       {/if}
     </svg>
 
-    {#if screen.face === "classic"}
+    {#if screen.face === "rings"}
       <div class="col" style:--y="2px">
-        {@render title(10)}
+        {@render title(6)}
+        <div class="value" style:color={screen.valueColor}>{screen.value}</div>
+        <div class="row" style:gap="8px" style:margin-top="6px">
+          <span style:color={screen.usageColor}>{screen.usage}</span>
+          <span style:color={screen.memColor}>{screen.mem}</span>
+        </div>
+      </div>
+    {:else}
+      {@const plus = screen.face === "plus"}
+      <div class="col" style:--y={plus ? "-10px" : "2px"}>
+        {@render title(plus ? 8 : 10)}
         <div class="value" style:color={screen.valueColor} style:margin-bottom="2px">{screen.value}</div>
         <div class="row dim" style:gap="8px" style:margin-top="4px">
           <span>{screen.clock}</span>
@@ -106,30 +110,23 @@
           <svg class="fan" viewBox="0 0 512 512" aria-hidden="true"><path fill={COLOR.text} d={FAN_PATH} /></svg>
           <span>{screen.rpm}</span>
         </div>
-      </div>
-    {:else if screen.face === "rings"}
-      <div class="col" style:--y="2px">
-        {@render title(6)}
-        <div class="value" style:color={screen.valueColor}>{screen.value}</div>
-        <div class="row" style:gap="8px" style:margin-top="6px">
-          <span style:color={screen.usageColor}>{screen.usage}</span>
-          <span style:color={screen.memColor}>{screen.mem}</span>
-        </div>
-      </div>
-    {:else if screen.face === "memory"}
-      <div class="col" style:--y="2px">
-        {@render title(10)}
-        <div class="value" style:color={screen.valueColor}>{screen.value}</div>
-        <div class="row dim" style:margin-top="6px">{screen.memTotal}</div>
-        <div class="row" style:color={screen.memColor} style:margin-top="2px">{screen.mem}</div>
-      </div>
-    {:else}
-      <div class="col" style:--y="-4px">
-        {@render title(8)}
-        <div class="value big" style:color={screen.valueColor}>{screen.value}</div>
-      </div>
-      <div class="col" style:--y="84px">
-        <div class="row" style:color={screen.usageColor}>{screen.usage}</div>
+        {#if plus}
+          <div
+            class="bar"
+            style:width="{MEM_BAR_WIDTH}px"
+            style:height="{MEM_BAR_HEIGHT}px"
+            style:background={COLOR.memTrack}
+            style:margin-top="6px"
+          >
+            {#if screen.memPct > 0}
+              <div class="bar-fill" style:width="{screen.memPct}%" style:background={screen.barColor}></div>
+            {/if}
+          </div>
+          <div class="row" style:gap="6px" style:margin-top="5px">
+            <span class="title" style:color={screen.barColor}>{screen.memName}</span>
+            <span class="dim">{screen.memValue}</span>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -211,10 +208,16 @@
     /* LVGL has no tracking; Montserrat's default is already a touch wide at 48 px. */
     letter-spacing: -0.5px;
   }
-  .value.big {
-    font-size: 72px;
-    line-height: 52px;
-    letter-spacing: -0.75px;
+  .bar {
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    transition:
+      width 320ms cubic-bezier(0.3, 0.7, 0.2, 1),
+      background 320ms ease;
   }
   .row {
     display: flex;

@@ -2,7 +2,8 @@
 //! whole life of the process, and every event it raises is kept here (so a
 //! freshly loaded webview can catch up) and forwarded to the UI as `bridge`.
 //!
-//! Closing the window only hides it; the tray icon brings it back or quits.
+//! Closing the window only hides it; the tray icon brings it back or quits, and
+//! launching the app again just shows the running instance.
 //!
 //! Identifying and flashing the board go through esptool, which the app sets
 //! up by itself on first use (Python + virtualenv in its data folder); the
@@ -320,6 +321,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Closing the window leaves the app in the tray; launching it again must
+        // not start a second bridge fighting over the serial port.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .setup(|app| {
             let settings_path = app.path().app_config_dir().ok().map(|d| d.join("settings.json"));
             let esptool_dir = app.path().app_local_data_dir()?.join("esptool");

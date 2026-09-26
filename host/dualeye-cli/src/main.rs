@@ -5,7 +5,7 @@
 //!   dualeye                 # auto-detect the board and stream
 //!   dualeye --once          # print one snapshot, no serial
 //!   dualeye --sensors       # list every raw sensor the backends see
-//!   dualeye --cpu-face rings --gpu-face memory
+//!   dualeye --cpu-face rings --gpu-face plus
 
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -29,10 +29,10 @@ struct Args {
     /// Seconds to wait after opening the port before the first write
     #[arg(long, default_value_t = 2.0)]
     boot_wait: f64,
-    /// Watch face on the left (CPU) screen: classic, rings, memory or gauge
+    /// Watch face on the left (CPU) screen: classic, rings or plus
     #[arg(long, default_value = "classic")]
     cpu_face: Face,
-    /// Watch face on the right (GPU) screen: classic, rings, memory or gauge
+    /// Watch face on the right (GPU) screen: classic, rings or plus
     #[arg(long, default_value = "classic")]
     gpu_face: Face,
     /// Print one snapshot as JSON and exit, without opening the port

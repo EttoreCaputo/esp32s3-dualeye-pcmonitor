@@ -7,7 +7,6 @@
 
 LV_FONT_DECLARE(lv_font_montserrat_bold_12)
 LV_FONT_DECLARE(lv_font_montserrat_bold_48)
-LV_FONT_DECLARE(lv_font_montserrat_bold_72)
 LV_FONT_DECLARE(lv_font_fan_16)
 
 /* Font Awesome 6 Free solid "fan", U+F863 */
@@ -38,9 +37,9 @@ LV_FONT_DECLARE(lv_font_fan_16)
 #define USAGE_ARC_SIZE 216
 #define RING_GAP 32
 #define ARC_WIDTH 13
-/* Gauge face: 270° sweep, open at the bottom. */
-#define GAUGE_ROTATION 135
-#define GAUGE_SWEEP 270
+/* Plus face: the memory bar under the load row. */
+#define MEM_BAR_WIDTH 96
+#define MEM_BAR_HEIGHT 6
 
 static const char *TAG = "ui_watch";
 
@@ -49,7 +48,8 @@ typedef struct {
     lv_obj_t *label;
 } ui_title_t;
 
-/* Temperature, clock, power, load ring and fan. */
+/* Temperature, clock, power, load ring and fan. The plus face adds a RAM or
+ * VRAM bar below; classic leaves the mem_* fields NULL. */
 typedef struct {
     lv_obj_t *root;
     lv_obj_t *usage_arc;
@@ -59,6 +59,9 @@ typedef struct {
     lv_obj_t *watts;
     lv_obj_t *usage;
     lv_obj_t *rpm;
+    lv_obj_t *mem_bar;
+    lv_obj_t *mem_name;
+    lv_obj_t *mem_value;
 } ui_classic_t;
 
 /* Activity-style rings, outside in: load, temperature, memory. */
@@ -73,25 +76,6 @@ typedef struct {
     lv_obj_t *mem;
 } ui_rings_t;
 
-/* RAM or VRAM: used GiB in the middle, share of the total on the ring. */
-typedef struct {
-    lv_obj_t *root;
-    lv_obj_t *arc;
-    ui_title_t title;
-    lv_obj_t *value;
-    lv_obj_t *total;
-    lv_obj_t *pct;
-} ui_memory_t;
-
-/* 270° temperature gauge around a large readout, load in the gap below. */
-typedef struct {
-    lv_obj_t *root;
-    lv_obj_t *arc;
-    ui_title_t title;
-    lv_obj_t *value;
-    lv_obj_t *usage;
-} ui_gauge_t;
-
 typedef struct {
     lv_obj_t *screen;
     const char *name;
@@ -100,8 +84,7 @@ typedef struct {
     uint32_t track;
     ui_classic_t classic;
     ui_rings_t rings;
-    ui_memory_t memory;
-    ui_gauge_t gauge;
+    ui_classic_t plus;
 } ui_screen_t;
 
 /* Label/value colours and the warning icon, from temperature and link state. */
@@ -225,14 +208,29 @@ static void set_title(ui_title_t *title, uint32_t color, bool warn)
     }
 }
 
-static void create_classic(ui_screen_t *ui)
+static lv_obj_t *create_bar(lv_obj_t *parent, uint32_t color, uint32_t track)
 {
-    ui_classic_t *f = &ui->classic;
+    lv_obj_t *bar = lv_bar_create(parent);
+    lv_obj_set_size(bar, MEM_BAR_WIDTH, MEM_BAR_HEIGHT);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_radius(bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_radius(bar, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(track), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(color), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+    return bar;
+}
+
+static void create_classic(ui_screen_t *ui, ui_classic_t *f, bool with_mem)
+{
     f->root = make_face(ui->screen);
     f->usage_arc = create_arc(f->root, USAGE_ARC_SIZE, ui->accent, ui->track);
 
-    lv_obj_t *col = create_column(f->root, 2);
-    create_title(&f->title, col, ui->name, ui->accent, 10);
+    lv_obj_t *col = create_column(f->root, with_mem ? -10 : 2);
+    create_title(&f->title, col, ui->name, ui->accent, with_mem ? 8 : 10);
 
     f->value = create_text(col, "—", &lv_font_montserrat_bold_48, COLOR_TEXT);
     lv_obj_set_style_margin_bottom(f->value, 2, 0);
@@ -250,6 +248,19 @@ static void create_classic(ui_screen_t *ui)
     f->usage = create_text(load_row, "--%", &lv_font_montserrat_14, ui->accent);
     create_fan(load_row);
     f->rpm = create_text(load_row, "--", &lv_font_montserrat_14, COLOR_TEXT);
+
+    if (!with_mem) {
+        return;
+    }
+    f->mem_bar = create_bar(col, COLOR_MEM, COLOR_MEM_TRACK);
+    lv_obj_set_style_margin_top(f->mem_bar, 6, 0);
+
+    lv_obj_t *mem_row = make_flex(col, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(mem_row, 6, 0);
+    lv_obj_set_style_margin_top(mem_row, 5, 0);
+    f->mem_name = create_text(mem_row, ui->mem_name, &lv_font_montserrat_bold_12, COLOR_MEM);
+    lv_obj_set_style_text_letter_space(f->mem_name, 1, 0);
+    f->mem_value = create_text(mem_row, "-- GB", &lv_font_montserrat_14, COLOR_TEXT_DIM);
 }
 
 static void create_rings(ui_screen_t *ui)
@@ -271,37 +282,6 @@ static void create_rings(ui_screen_t *ui)
     f->mem = create_text(row, "--%", &lv_font_montserrat_14, COLOR_MEM);
 }
 
-static void create_memory(ui_screen_t *ui)
-{
-    ui_memory_t *f = &ui->memory;
-    f->root = make_face(ui->screen);
-    f->arc = create_arc(f->root, USAGE_ARC_SIZE, COLOR_MEM, COLOR_MEM_TRACK);
-
-    lv_obj_t *col = create_column(f->root, 2);
-    create_title(&f->title, col, ui->mem_name, ui->accent, 10);
-    f->value = create_text(col, "—", &lv_font_montserrat_bold_48, COLOR_TEXT);
-    f->total = create_text(col, "of -- GB", &lv_font_montserrat_14, COLOR_TEXT_DIM);
-    lv_obj_set_style_margin_top(f->total, 6, 0);
-    f->pct = create_text(col, "--%", &lv_font_montserrat_14, COLOR_MEM);
-    lv_obj_set_style_margin_top(f->pct, 2, 0);
-}
-
-static void create_gauge(ui_screen_t *ui)
-{
-    ui_gauge_t *f = &ui->gauge;
-    f->root = make_face(ui->screen);
-    f->arc = create_arc(f->root, USAGE_ARC_SIZE, COLOR_CYAN, COLOR_TEMP_TRACK);
-    lv_arc_set_rotation(f->arc, GAUGE_ROTATION);
-    lv_arc_set_bg_angles(f->arc, 0, GAUGE_SWEEP);
-
-    lv_obj_t *col = create_column(f->root, -4);
-    create_title(&f->title, col, ui->name, ui->accent, 8);
-    f->value = create_text(col, "—", &lv_font_montserrat_bold_72, COLOR_TEXT);
-
-    f->usage = create_text(f->root, "--%", &lv_font_montserrat_14, ui->accent);
-    lv_obj_align(f->usage, LV_ALIGN_CENTER, 0, 84);
-}
-
 static void create_screen(ui_screen_t *ui, lv_display_t *disp, const char *name, const char *mem_name,
                           uint32_t accent, uint32_t track)
 {
@@ -312,10 +292,9 @@ static void create_screen(ui_screen_t *ui, lv_display_t *disp, const char *name,
     ui->screen = lv_display_get_screen_active(disp);
     style_screen_black(ui->screen);
 
-    create_classic(ui);
+    create_classic(ui, &ui->classic, false);
     create_rings(ui);
-    create_memory(ui);
-    create_gauge(ui);
+    create_classic(ui, &ui->plus, true);
     lv_obj_remove_flag(ui->classic.root, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -384,9 +363,30 @@ static uint32_t placeholder_title(metrics_ui_state_t state)
     return state == METRICS_UI_ERROR ? COLOR_ERROR : COLOR_TEXT_DIM;
 }
 
-static void update_classic(ui_screen_t *ui, const metrics_temp_t *temp, metrics_ui_state_t state, int fan_rpm)
+/* Share of RAM or VRAM on the bar, used and total GiB beside the name; orange
+ * when nearly full, like a warm temperature. */
+static void update_mem_bar(ui_classic_t *f, const metrics_temp_t *temp)
 {
-    ui_classic_t *f = &ui->classic;
+    if (!temp->mem_valid) {
+        lv_bar_set_value(f->mem_bar, 0, LV_ANIM_OFF);
+        lv_label_set_text(f->mem_value, "-- GB");
+        set_text_color(f->mem_name, COLOR_TEXT_DIM);
+        return;
+    }
+    int pct = mem_pct(temp);
+    uint32_t color = pct >= MEM_HIGH_PCT ? COLOR_WARM : COLOR_MEM;
+    lv_bar_set_value(f->mem_bar, pct, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(f->mem_bar, lv_color_hex(color), LV_PART_INDICATOR);
+    set_text_color(f->mem_name, color);
+
+    char text[24];
+    snprintf(text, sizeof(text), "%.1f/%.0f GB", temp->mem_used_mb / 1024.0f, temp->mem_total_mb / 1024.0f);
+    lv_label_set_text(f->mem_value, text);
+}
+
+static void update_classic(ui_screen_t *ui, ui_classic_t *f, const metrics_temp_t *temp, metrics_ui_state_t state,
+                           int fan_rpm)
+{
     if (state == METRICS_UI_WAITING || !temp->valid) {
         lv_arc_set_value(f->usage_arc, 0);
         lv_label_set_text(f->value, "—");
@@ -397,6 +397,10 @@ static void update_classic(ui_screen_t *ui, const metrics_temp_t *temp, metrics_
         set_title(&f->title, placeholder_title(state), false);
         set_text_color(f->value, COLOR_TEXT_DIM);
         set_text_color(f->usage, COLOR_TEXT_DIM);
+        if (f->mem_bar) {
+            metrics_temp_t none = {0};
+            update_mem_bar(f, &none);
+        }
         return;
     }
 
@@ -428,6 +432,9 @@ static void update_classic(ui_screen_t *ui, const metrics_temp_t *temp, metrics_
     set_title(&f->title, tone.label, tone.warn);
     set_text_color(f->value, tone.value);
     set_text_color(f->usage, ui->accent);
+    if (f->mem_bar) {
+        update_mem_bar(f, temp);
+    }
 }
 
 static void update_rings(ui_screen_t *ui, const metrics_temp_t *temp, float temp_max, metrics_ui_state_t state)
@@ -464,77 +471,12 @@ static void update_rings(ui_screen_t *ui, const metrics_temp_t *temp, float temp
     set_text_color(f->mem, temp->mem_valid ? COLOR_MEM : COLOR_TEXT_DIM);
 }
 
-static void update_memory(ui_screen_t *ui, const metrics_temp_t *temp, metrics_ui_state_t state)
-{
-    ui_memory_t *f = &ui->memory;
-    if (state == METRICS_UI_WAITING || !temp->mem_valid) {
-        lv_arc_set_value(f->arc, 0);
-        lv_label_set_text(f->value, "—");
-        lv_label_set_text(f->total, "of -- GB");
-        lv_label_set_text(f->pct, "--%");
-        set_title(&f->title, placeholder_title(state), false);
-        set_text_color(f->value, COLOR_TEXT_DIM);
-        set_text_color(f->pct, COLOR_TEXT_DIM);
-        return;
-    }
-
-    char used[16];
-    snprintf(used, sizeof(used), "%.1f", temp->mem_used_mb / 1024.0f);
-    lv_label_set_text(f->value, used);
-
-    char total[20];
-    snprintf(total, sizeof(total), "of %.0f GB", temp->mem_total_mb / 1024.0f);
-    lv_label_set_text(f->total, total);
-
-    int pct = mem_pct(temp);
-    set_pct(f->pct, true, pct);
-    lv_arc_set_value(f->arc, pct);
-
-    /* Nearly full memory goes orange like a warm temperature. */
-    ui_tone_t tone = {.label = ui->accent, .value = COLOR_TEXT, .warn = false};
-    if (pct >= MEM_HIGH_PCT) {
-        tone = (ui_tone_t) {.label = COLOR_WARM, .value = COLOR_WARM, .warn = true};
-    } else if (state == METRICS_UI_STALE) {
-        tone = (ui_tone_t) {.label = COLOR_STALE, .value = COLOR_TEXT_DIM, .warn = false};
-    } else if (state == METRICS_UI_ERROR) {
-        tone.label = COLOR_ERROR;
-    }
-    set_title(&f->title, tone.label, tone.warn);
-    set_text_color(f->value, tone.value);
-    set_text_color(f->pct, COLOR_MEM);
-}
-
-static void update_gauge(ui_screen_t *ui, const metrics_temp_t *temp, float temp_max, metrics_ui_state_t state)
-{
-    ui_gauge_t *f = &ui->gauge;
-    if (state == METRICS_UI_WAITING || !temp->valid) {
-        lv_arc_set_value(f->arc, 0);
-        lv_label_set_text(f->value, "—");
-        lv_label_set_text(f->usage, "--%");
-        set_title(&f->title, placeholder_title(state), false);
-        set_text_color(f->value, COLOR_TEXT_DIM);
-        set_text_color(f->usage, COLOR_TEXT_DIM);
-        return;
-    }
-
-    set_temp_value(f->value, temp->temp_c);
-    set_pct(f->usage, true, clamp_pct(temp->usage_pct, 100.0f));
-    lv_arc_set_value(f->arc, clamp_pct(temp->temp_c, temp_max));
-    set_arc_color(f->arc, temp_ring_color(temp->temp_c));
-
-    ui_tone_t tone = temp_tone(ui, temp->temp_c, state);
-    set_title(&f->title, tone.label, tone.warn);
-    set_text_color(f->value, tone.value);
-    set_text_color(f->usage, ui->accent);
-}
-
 static void show_face(ui_screen_t *ui, metrics_face_t face)
 {
     lv_obj_t *roots[METRICS_FACE_COUNT] = {
         [METRICS_FACE_CLASSIC] = ui->classic.root,
         [METRICS_FACE_RINGS] = ui->rings.root,
-        [METRICS_FACE_MEMORY] = ui->memory.root,
-        [METRICS_FACE_GAUGE] = ui->gauge.root,
+        [METRICS_FACE_PLUS] = ui->plus.root,
     };
     for (int i = 0; i < METRICS_FACE_COUNT; i++) {
         if (i == (int) face) {
@@ -556,14 +498,11 @@ static void update_screen(ui_screen_t *ui, metrics_face_t face, const metrics_te
     case METRICS_FACE_RINGS:
         update_rings(ui, temp, temp_max, state);
         break;
-    case METRICS_FACE_MEMORY:
-        update_memory(ui, temp, state);
-        break;
-    case METRICS_FACE_GAUGE:
-        update_gauge(ui, temp, temp_max, state);
+    case METRICS_FACE_PLUS:
+        update_classic(ui, &ui->plus, temp, state, fan_rpm);
         break;
     default:
-        update_classic(ui, temp, state, fan_rpm);
+        update_classic(ui, &ui->classic, temp, state, fan_rpm);
         break;
     }
     show_face(ui, face);

@@ -17,6 +17,7 @@ dualeye-core = { version = "0.1.0", path = "../../dualeye-core", features = ["pr
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tauri = { version = "2.11.6", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2.4.5"
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
