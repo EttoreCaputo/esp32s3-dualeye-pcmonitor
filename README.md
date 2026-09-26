@@ -6,7 +6,7 @@
 ![LCD](https://img.shields.io/badge/LCD-GC9A01%20×2-lightgrey)
 ![Host](https://img.shields.io/badge/host-Rust-purple)
 
-PC monitoring on **ESP32-S3 DualEye** (two 240×240 round displays): CPU/GPU temperatures, load, fans, RAM and VRAM, on Apple Watch–style faces you pick per screen.
+PC monitoring on **ESP32-S3 DualEye** (two 240×240 round displays): CPU/GPU temperatures, load, fans, RAM and VRAM, plus Claude Code usage with its mascot, on Apple Watch–style faces you pick per screen.
 
 A standalone Rust program on the host reads the sensors straight from the OS (no CoolerControl or other daemon) and sends them to the board over USB Serial/JTAG as one JSON line per second.
 
@@ -66,7 +66,7 @@ sudo systemd-tmpfiles --create /etc/tmpfiles.d/dualeye-rapl.conf
 
 ## Watch faces
 
-Each screen shows one of four faces, chosen independently (left = CPU, right = GPU):
+Each screen shows one of six faces, chosen independently (left = CPU, right = GPU):
 
 | Face | Shows |
 |------|-------|
@@ -74,8 +74,17 @@ Each screen shows one of four faces, chosen independently (left = CPU, right = G
 | `rings` | Three rings, outside in: load, temperature (cyan, orange from 80 °C, red from 90 °C), memory; temperature and both percentages in the middle |
 | `plus` | Classic, plus a bar under the load and fan row for RAM (left) or VRAM (right) with GiB used/total; orange from 90 % |
 | `bar` | Classic with a smaller RAM/VRAM bar under the load and fan row, no numbers |
+| `claude` | Claude Code: 5-hour limit used on the outer ring and in the middle, weekly limit on the inner ring (orange from 80 %, red from 95 %), time to the 5-hour reset, and a small Clawd. Without the status line: tokens in the 5-hour window, the window's progress on the ring, and today's tokens |
+| `clawd` | Claude Code's mascot, large and animated: walks while Claude works, blinks when idle, sleeps after 30 min; model name, state and tokens in the window |
 
 Pick them in the app (Settings → **Display**, saved across restarts) or with `--cpu-face` / `--gpu-face` on the CLI. The host sends the choice in every line, so the board switches on the next snapshot and needs no storage of its own; a line without `face` shows `classic`.
+
+### Claude Code faces
+
+The host reads Claude Code's usage from two local sources, with nothing to set up for the first:
+
+- **Transcripts** (`~/.claude/projects/**/*.jsonl`, or `$CLAUDE_CONFIG_DIR/projects`): tokens per reply (input, output and cache writes; cache reads are left out, they would swamp the figure), counted in Claude Code's 5-hour windows and since midnight. A transcript written in the last 20 s means Claude is working. The format is internal to Claude Code, so it is read leniently.
+- **Status line**, for the plan's 5-hour and weekly limits (Pro and Max): Settings → **Display** → **Connect status line** sets `statusLine` in `~/.claude/settings.json` to `dualeye-app --claude-statusline` (a copy of the file is kept as `settings.json.dualeye-backup`). Claude Code then pipes its status JSON to the app, which keeps the latest copy and prints your previous status line (or a short default: model, 5h %, 7d %). **Disconnect** puts the previous one back. The CLI takes the same `--claude-statusline` flag.
 
 ## Desktop app
 
@@ -85,7 +94,7 @@ How to run and package it is in [Building from source](#building-from-source).
 
 ### Identify and flash the board
 
-Settings → **Device** finds the ESP32-S3 on USB, reads its chip, MAC and flash size, and flashes the firmware. The image is `build/merged-binary.bin` (bootloader + partition table + app, written at `0x0`), embedded in the app at build time, so replace that file and rebuild the app to ship a new firmware. It works on a blank board too, since esptool talks to the ROM bootloader; streaming pauses meanwhile and the board reboots afterwards.
+Settings → **Device** finds the ESP32-S3 on USB, reads its chip, MAC and flash size, and flashes the firmware. The image is `build/merged-binary.bin` (bootloader + partition table + app, written at `0x0`), embedded in the app at build time, so replace that file and rebuild the app to ship a new firmware (the build warns when a file in `main/` is newer than the image, i.e. `idf.py build merge-bin` wasn't rerun). It works on a blank board too, since esptool talks to the ROM bootloader; streaming pauses meanwhile and the board reboots afterwards.
 
 Flashing uses [esptool](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/index.html) and the user installs nothing: the first time Identify or Flash is used, the app
 
@@ -110,7 +119,7 @@ build/merged-binary.bin   firmware image the desktop app flashes (the only track
 sdkconfig.defaults        firmware config (target esp32s3, 16 MB flash, USB Serial/JTAG console)
 .devcontainer/            ESP-IDF container for VS Code
 host/                     Cargo workspace
-  dualeye-core/           sensors, snapshot, serial bridge, esptool setup/flash (library)
+  dualeye-core/           sensors, Claude Code usage, snapshot, serial bridge, esptool setup/flash (library)
   dualeye-cli/            `dualeye` command-line bridge
   dualeye-app/            desktop app: Svelte UI in src/, Tauri shell in src-tauri/
 ```
@@ -162,7 +171,7 @@ Plain `cargo` commands in `host/` only touch `dualeye-core` and `dualeye-cli` (t
 
 ### Watch faces
 
-Each screen shows one of four faces, chosen independently (left = CPU, right = GPU):
+Each screen shows one of six faces, chosen independently (left = CPU, right = GPU):
 
 | Face | Shows |
 |------|-------|
@@ -170,6 +179,8 @@ Each screen shows one of four faces, chosen independently (left = CPU, right = G
 | `rings` | Three rings, outside in: load, temperature (cyan, orange from 80 °C, red from 90 °C), memory; temperature and both percentages in the middle |
 | `plus` | Classic, plus a bar under the load and fan row for RAM (left) or VRAM (right) with GiB used/total; orange from 90 % |
 | `bar` | Classic with a smaller RAM/VRAM bar under the load and fan row, no numbers |
+| `claude` | Claude Code: 5-hour limit used on the outer ring and in the middle, weekly limit on the inner ring (orange from 80 %, red from 95 %), time to the 5-hour reset, and a small Clawd. Without the status line: tokens in the 5-hour window, the window's progress on the ring, and today's tokens |
+| `clawd` | Claude Code's mascot, large and animated: walks while Claude works, blinks when idle, sleeps after 30 min; model name, state and tokens in the window |
 
 Pick them in the app (Settings → **Display**, saved across restarts) or with `--cpu-face` / `--gpu-face` on the CLI. The host sends the choice in every line, so the board switches on the next snapshot and needs no storage of its own; a line without `face` shows `classic`.
 
@@ -201,6 +212,7 @@ Where things live in the app:
 | Live state, bridge/flash events, synthetic preview feed | `src/lib/monitor.svelte.ts` |
 | Settings drawer (Connection, Display, Device, Sensors, Console) | `src/lib/Drawer.svelte` |
 | Tauri commands, tray, bridge lifecycle | `src-tauri/src/lib.rs` |
+| Claude Code usage and the status line helper | `host/dualeye-core/src/claude.rs`, `claude/statusline.rs` |
 | esptool runner and first-use setup | `host/dualeye-core/src/flasher.rs`, `flasher/setup.rs` |
 
 ### Checks
@@ -219,4 +231,10 @@ cd host/dualeye-app && npm run check
 {"v":1,"ts":1790419114,"cpu":{"temp_c":40.2,"load_pct":2.8,"clock_mhz":1210,"power_w":14.6,"mem":{"used_mb":12568,"total_mb":62277}},"gpu":{"temp_c":35.0,"load_pct":0.0,"clock_mhz":210,"power_w":22.1,"mem":{"used_mb":14,"total_mb":24576}},"fans":[{"id":"cpu","rpm":3824},{"id":"gpu","rpm":0}],"face":{"cpu":"rings","gpu":"plus"}}
 ```
 
-Parsed by `main/metrics_parser.c`; lines without any temperature are ignored, and the UI goes stale after 3 s without data. `mem` is in MiB: system RAM under `cpu`, VRAM under `gpu`. `face` is added by the bridge, not the sensor collector; unknown face names fall back to `classic`.
+Parsed by `main/metrics_parser.c`; lines without any temperature are ignored, and the UI goes stale after 3 s without data. `mem` is in MiB: system RAM under `cpu`, VRAM under `gpu`. `face` is added by the bridge, not the sensor collector; unknown face names fall back to `classic`. So is `claude`, when Claude Code has run on this machine:
+
+```json
+"claude":{"tok":1234567,"today":4500000,"left_min":133,"s_pct":42.0,"w_pct":18.0,"state":"work","model":"OPUS 5.5"}
+```
+
+`tok` and `today` are tokens in the 5-hour window and since local midnight, `left_min` the minutes until the window resets, `s_pct` / `w_pct` the 5-hour and weekly limits used (only with the status line connected), `state` one of `work`, `idle`, `sleep`.

@@ -1,7 +1,7 @@
 // Constants and formatting copied from main/ui_watch.c, so the mirror shows the
 // same pixels the board does. Keep in sync when the firmware UI changes.
 
-import type { Metrics } from "./monitor.svelte";
+import type { ClaudeMetrics, ClaudeState, Metrics } from "./monitor.svelte";
 
 export const LCD = 240;
 export const USAGE_ARC_SIZE = 216;
@@ -11,6 +11,9 @@ export const TEMP_WARM_C = 80;
 export const TEMP_HOT_C = 90;
 export const MEM_HIGH_PCT = 90;
 export const TEMP_MAX_C = 100;
+export const CLAUDE_WARM_PCT = 80;
+export const CLAUDE_HOT_PCT = 95;
+export const CLAUDE_BLOCK_MIN = 300;
 
 export const COLOR = {
   text: "#FFFFFF",
@@ -22,6 +25,11 @@ export const COLOR = {
   warm: "#F8A639",
   hot: "#F05354",
   stale: "#FFD60A",
+  claude: "#D97757",
+  claudeDim: "#6E3B2B",
+  claudeTrack: "#35190F",
+  week: "#E9C4A6",
+  weekTrack: "#2B2019",
 } as const;
 
 export const DEVICES = {
@@ -31,7 +39,7 @@ export const DEVICES = {
 export type DeviceId = keyof typeof DEVICES;
 
 /** `metrics_face_t`; the names are what goes on the wire. */
-export type Face = "classic" | "rings" | "plus" | "bar";
+export type Face = "classic" | "rings" | "plus" | "bar" | "claude" | "clawd";
 export type Faces = Record<DeviceId, Face>;
 export const DEFAULT_FACES: Faces = { cpu: "classic", gpu: "classic" };
 export const FACES: { id: Face; name: string; blurb: string }[] = [
@@ -39,10 +47,13 @@ export const FACES: { id: Face; name: string; blurb: string }[] = [
   { id: "rings", name: "Rings", blurb: "Load, temperature and memory rings" },
   { id: "plus", name: "Plus", blurb: "Classic with a RAM or VRAM bar" },
   { id: "bar", name: "Bar", blurb: "Classic with a slim memory bar, no numbers" },
+  { id: "claude", name: "Claude", blurb: "Claude Code's 5-hour and weekly limits, with Clawd" },
+  { id: "clawd", name: "Clawd", blurb: "Clawd shows whether Claude Code is working" },
 ];
+export const isClaudeFace = (face: Face): face is "claude" | "clawd" => face === "claude" || face === "clawd";
 
 /** `ui_classic_layout_t` for the classic-based faces; no bar when `barW` is 0. */
-export const CLASSIC_LAYOUT: Record<Exclude<Face, "rings">, { y: number; titleGap: number; barW: number; barH: number; memText: boolean }> = {
+export const CLASSIC_LAYOUT: Record<Exclude<Face, "rings" | "claude" | "clawd">, { y: number; titleGap: number; barW: number; barH: number; memText: boolean }> = {
   classic: { y: 2, titleGap: 10, barW: 0, barH: 0, memText: false },
   plus: { y: -10, titleGap: 8, barW: 96, barH: 6, memText: true },
   bar: { y: -3, titleGap: 10, barW: 72, barH: 4, memText: false },
@@ -72,6 +83,28 @@ export type Screen = {
   /** The memory bar and the plus face's RAM/VRAM name: orange when nearly full. */
   barColor: string;
   warn: boolean;
+  /** Set on the claude and clawd faces. */
+  claude?: ClaudeView;
+};
+
+/** What `update_claude()` and `update_clawd_face()` put on screen. */
+export type ClaudeView = {
+  sessionPct: number;
+  sessionColor: string;
+  showWeek: boolean;
+  weekPct: number;
+  weekColor: string;
+  value: string;
+  valueColor: string;
+  reset: string;
+  weekName: string;
+  week: string;
+  model: string;
+  status: string;
+  statusColor: string;
+  tokens: string;
+  mascot: ClaudeState;
+  mascotColor: string;
 };
 
 const cInt = (v: number) => Math.trunc(v + 0.5); // (int) (v + 0.5f)
@@ -80,6 +113,122 @@ const pct = (v: number, max: number) => Math.min(100, Math.max(0, cInt((v / max)
 const pctText = (p: number | undefined) => (p === undefined ? "--%" : `${p}%`);
 
 export function screenFor(
+  id: DeviceId,
+  face: Face,
+  m: Metrics | undefined,
+  stale: boolean,
+  waiting: boolean,
+  fan?: number,
+  claude?: ClaudeMetrics,
+): Screen {
+  const screen = sensorScreen(id, face, m, stale, waiting, fan);
+  return isClaudeFace(face) ? { ...screen, claude: claudeView(claude, stale, waiting) } : screen;
+}
+
+/** `format_tokens()`: "1.2M", "845K", "9.4K", "512". */
+export function formatTokens(t: number): string {
+  if (t < 1000) return String(Math.trunc(t));
+  if (t < 9950) return `${(t / 1e3).toFixed(1)}K`;
+  if (t < 999500) return `${(t / 1e3).toFixed(0)}K`;
+  if (t < 99950000) return `${(t / 1e6).toFixed(1)}M`;
+  return `${(t / 1e6).toFixed(0)}M`;
+}
+
+const limitColor = (p: number, normal: string) => (p >= CLAUDE_HOT_PCT ? COLOR.hot : p >= CLAUDE_WARM_PCT ? COLOR.warm : normal);
+
+function claudeView(c: ClaudeMetrics | undefined, stale: boolean, waiting: boolean): ClaudeView {
+  const live = !waiting && c !== undefined;
+  const asleep = !live || c.state === "sleep";
+  const base = {
+    mascot: live ? c.state : ("idle" as ClaudeState),
+    mascotColor: asleep ? COLOR.claudeDim : COLOR.claude,
+    weekColor: COLOR.week,
+  };
+  if (!live) {
+    return {
+      ...base,
+      sessionPct: 0,
+      sessionColor: COLOR.claude,
+      showWeek: true,
+      weekPct: 0,
+      value: "—",
+      valueColor: COLOR.textDim,
+      reset: "--",
+      weekName: "WK",
+      week: "--",
+      model: "CLAUDE",
+      status: waiting ? "WAITING" : "NO DATA",
+      statusColor: COLOR.textDim,
+      tokens: "--",
+    };
+  }
+  // update_session_arc(): the 5-hour limit, else how far into the window.
+  const session = c.s_pct !== undefined ? pct(c.s_pct, 100) : undefined;
+  const sessionPct = session ?? (c.left_min !== undefined ? pct(CLAUDE_BLOCK_MIN - c.left_min, CLAUDE_BLOCK_MIN) : 0);
+  const week = c.w_pct !== undefined ? pct(c.w_pct, 100) : undefined;
+  const left = c.left_min;
+  const reset = left === undefined ? "--" : left >= 60 ? `${Math.trunc(left / 60)}h ${String(left % 60).padStart(2, "0")}m` : `${left}m`;
+  const status = { work: "WORKING", idle: "IDLE", sleep: "ASLEEP" }[c.state];
+  return {
+    ...base,
+    sessionPct,
+    sessionColor: session !== undefined ? limitColor(session, COLOR.claude) : COLOR.claude,
+    showWeek: week !== undefined,
+    weekPct: week ?? 0,
+    weekColor: week !== undefined ? limitColor(week, COLOR.week) : COLOR.week,
+    value: session !== undefined ? `${session}%` : formatTokens(c.tok),
+    valueColor: stale ? COLOR.textDim : session !== undefined ? limitColor(session, COLOR.text) : COLOR.text,
+    reset,
+    weekName: week !== undefined ? "WK" : "DAY",
+    week: week !== undefined ? `${week}%` : formatTokens(c.today),
+    model: c.model || "CLAUDE",
+    status,
+    statusColor: c.state === "work" ? COLOR.claude : COLOR.textDim,
+    tokens: formatTokens(c.tok),
+  };
+}
+
+/** Clawd on its 16 × 5 grid, as `clawd_pose()` and `clawd_animate()` lay it out. */
+export const CLAWD_COLS = 16;
+export const CLAWD_ROWS = 5;
+export const CLAWD_TICK_MS = 150;
+export type Rect = { x: number; y: number; w: number; h: number };
+export function clawdPose(px: number, state: ClaudeState, tick: number) {
+  const slit = Math.max(1, Math.trunc(px / 4));
+  const lift = Math.max(1, Math.trunc(px / 4));
+  let bob = 0;
+  let liftA = false;
+  let liftB = false;
+  let eyeH = px;
+  let low = false;
+  let zzz = "";
+  if (state === "work") {
+    const phase = tick % 4;
+    bob = phase % 2 ? lift : 0;
+    liftA = phase < 2;
+    liftB = phase >= 2;
+  } else if (state === "idle") {
+    if (tick % 24 === 0) eyeH = slit;
+  } else {
+    eyeH = slit;
+    low = true;
+    zzz = ["z", "z Z", "z Z z", ""][Math.trunc(tick / 5) % 4];
+  }
+  const body: Rect[] = [
+    { x: 2 * px, y: -bob, w: 12 * px, h: 4 * px },
+    { x: 0, y: 2 * px - bob, w: CLAWD_COLS * px, h: px },
+    ...[3, 5, 10, 12].map((col, i) => ({ x: col * px, y: 4 * px, w: px, h: (i % 2 === 0 ? liftA : liftB) ? Math.trunc(px / 2) : px })),
+  ];
+  const eyes: Rect[] = [4, 11].map((col) => ({
+    x: col * px,
+    y: px - bob + (low ? px - eyeH : Math.trunc((px - eyeH) / 2)),
+    w: px,
+    h: eyeH,
+  }));
+  return { body, eyes, zzz };
+}
+
+function sensorScreen(
   id: DeviceId,
   face: Face,
   m: Metrics | undefined,

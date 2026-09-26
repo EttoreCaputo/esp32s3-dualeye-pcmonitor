@@ -121,6 +121,7 @@ impl Collector {
             gpu: platform.gpu,
             fans,
             face: None,
+            claude: None,
         }
     }
 

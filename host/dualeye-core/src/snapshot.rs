@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::claude::ClaudeMetrics;
+
 pub const PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -56,10 +58,14 @@ pub enum Face {
     Plus,
     /// Classic plus a smaller memory bar, without the numbers.
     Bar,
+    /// Claude Code: 5-hour and weekly limit rings, tokens, a small Clawd.
+    Claude,
+    /// Claude Code: a large animated Clawd showing whether Claude is working.
+    Clawd,
 }
 
 impl Face {
-    pub const ALL: [Face; 4] = [Face::Classic, Face::Rings, Face::Plus, Face::Bar];
+    pub const ALL: [Face; 6] = [Face::Classic, Face::Rings, Face::Plus, Face::Bar, Face::Claude, Face::Clawd];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -67,6 +73,8 @@ impl Face {
             Face::Rings => "rings",
             Face::Plus => "plus",
             Face::Bar => "bar",
+            Face::Claude => "claude",
+            Face::Clawd => "clawd",
         }
     }
 }
@@ -118,6 +126,10 @@ pub struct Snapshot {
     /// `classic` on both screens when it is missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub face: Option<Faces>,
+    /// Claude Code usage, also set by the bridge; absent where Claude Code
+    /// hasn't run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<ClaudeMetrics>,
 }
 
 impl Snapshot {
@@ -164,6 +176,7 @@ mod tests {
             },
             fans: vec![Fan { id: "cpu".into(), rpm: 3770 }],
             face: Some(Faces { cpu: Face::Rings, gpu: Face::Plus }),
+            claude: None,
         };
         assert_eq!(
             snap.to_line(),
@@ -182,14 +195,42 @@ mod tests {
             gpu: DeviceMetrics::default(),
             fans: vec![],
             face: None,
+            claude: None,
         };
         assert_eq!(snap.to_line(), "{\"v\":1,\"ts\":0}\n");
         assert!(!snap.is_sendable());
     }
 
     #[test]
+    fn claude_section() {
+        let snap = Snapshot {
+            v: 1,
+            ts: 0,
+            cpu: DeviceMetrics { temp_c: Some(40.0), ..Default::default() },
+            gpu: DeviceMetrics::default(),
+            fans: vec![],
+            face: Some(Faces { cpu: Face::Claude, gpu: Face::Clawd }),
+            claude: Some(ClaudeMetrics {
+                tok: 1_234_567,
+                today: 4_500_000,
+                left_min: Some(133),
+                s_pct: Some(42.0),
+                w_pct: None,
+                state: crate::ClaudeState::Work,
+                model: Some("OPUS 5.5".into()),
+            }),
+        };
+        assert_eq!(
+            snap.to_line(),
+            "{\"v\":1,\"ts\":0,\"cpu\":{\"temp_c\":40.0},\"face\":{\"cpu\":\"claude\",\"gpu\":\"clawd\"},\
+             \"claude\":{\"tok\":1234567,\"today\":4500000,\"left_min\":133,\"s_pct\":42.0,\"state\":\"work\",\"model\":\"OPUS 5.5\"}}\n"
+        );
+    }
+
+    #[test]
     fn faces_parse_by_name() {
         assert_eq!("plus".parse::<Face>(), Ok(Face::Plus));
+        assert_eq!("clawd".parse::<Face>(), Ok(Face::Clawd));
         assert!("gauge".parse::<Face>().is_err());
         let faces: Faces = serde_json::from_str("{\"gpu\":\"rings\"}").unwrap();
         assert_eq!(faces, Faces { cpu: Face::Classic, gpu: Face::Rings });

@@ -5,7 +5,8 @@
 //!   dualeye                 # auto-detect the board and stream
 //!   dualeye --once          # print one snapshot, no serial
 //!   dualeye --sensors       # list every raw sensor the backends see
-//!   dualeye --cpu-face rings --gpu-face plus
+//!   dualeye --cpu-face rings --gpu-face claude
+//!   dualeye --claude-statusline   # Claude Code status line helper (reads stdin)
 
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -15,7 +16,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use dualeye_core::bridge::{self, BridgeConfig, BridgeEvent};
-use dualeye_core::{Collector, Face, Faces, Memory, Snapshot, serial};
+use dualeye_core::claude::statusline;
+use dualeye_core::{ClaudeUsage, Collector, Face, Faces, Memory, Snapshot, serial};
 
 #[derive(Parser)]
 #[command(name = "dualeye", version, about = "Stream PC sensors to the ESP32-S3 DualEye board")]
@@ -29,10 +31,10 @@ struct Args {
     /// Seconds to wait after opening the port before the first write
     #[arg(long, default_value_t = 2.0)]
     boot_wait: f64,
-    /// Watch face on the left (CPU) screen: classic, rings, plus or bar
+    /// Watch face on the left (CPU) screen: classic, rings, plus, bar, claude or clawd
     #[arg(long, default_value = "classic")]
     cpu_face: Face,
-    /// Watch face on the right (GPU) screen: classic, rings, plus or bar
+    /// Watch face on the right (GPU) screen: classic, rings, plus, bar, claude or clawd
     #[arg(long, default_value = "classic")]
     gpu_face: Face,
     /// Print one snapshot as JSON and exit, without opening the port
@@ -44,6 +46,10 @@ struct Args {
     /// List serial ports and exit
     #[arg(long)]
     list_ports: bool,
+    /// Act as Claude Code's status line command: keep its status JSON for the
+    /// Claude faces and print a short status line
+    #[arg(long = "claude-statusline", hide = true)]
+    claude_statusline: bool,
     /// Do not print a line per snapshot
     #[arg(long, short)]
     quiet: bool,
@@ -51,6 +57,10 @@ struct Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    if args.claude_statusline {
+        statusline::run(std::io::stdin().lock(), std::io::stdout().lock());
+        return ExitCode::SUCCESS;
+    }
     if args.list_ports {
         for p in serial::list_ports() {
             let mark = if p.is_board { "  <- DualEye" } else { "" };
@@ -71,7 +81,9 @@ fn main() -> ExitCode {
         let mut collector = Collector::new();
         collector.sample();
         thread::sleep(Duration::from_millis(500));
-        println!("{}", serde_json::to_string(&collector.sample()).unwrap());
+        let mut snapshot = collector.sample();
+        snapshot.claude = ClaudeUsage::new().sample();
+        println!("{}", serde_json::to_string(&snapshot).unwrap());
         return ExitCode::SUCCESS;
     }
 

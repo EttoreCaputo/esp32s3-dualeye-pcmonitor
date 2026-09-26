@@ -29,14 +29,33 @@ LV_FONT_DECLARE(lv_font_fan_16)
 #define COLOR_HOT 0xF05354
 #define COLOR_ERROR 0xFF453A
 #define COLOR_STALE 0xFFD60A
+/* Claude's clay, a dimmer one for Clawd asleep, and the weekly ring's sand. */
+#define COLOR_CLAUDE 0xD97757
+#define COLOR_CLAUDE_DIM 0x6E3B2B
+#define COLOR_CLAUDE_TRACK 0x35190F
+#define COLOR_WEEK 0xE9C4A6
+#define COLOR_WEEK_TRACK 0x2B2019
 
 #define TEMP_WARM_C 80.0f
 #define TEMP_HOT_C 90.0f
 #define MEM_HIGH_PCT 90
+/* Claude limits: orange from 80 %, red from 95 %. */
+#define CLAUDE_WARM_PCT 80
+#define CLAUDE_HOT_PCT 95
+#define CLAUDE_BLOCK_MIN 300
 
 #define USAGE_ARC_SIZE 216
 #define RING_GAP 32
 #define ARC_WIDTH 13
+
+/* Clawd, Claude Code's mascot, on a 16 x 5 grid of CLAWD px-sized cells: a
+ * body with two eye holes, arms one row across, four legs. */
+#define CLAWD_COLS 16
+#define CLAWD_ROWS 5
+#define CLAWD_TICK_MS 150
+#define CLAWD_BLINK_TICKS 24
+#define CLAWD_SMALL_PX 4
+#define CLAWD_LARGE_PX 8
 
 static const char *TAG = "ui_watch";
 
@@ -74,6 +93,43 @@ typedef struct {
     lv_obj_t *mem;
 } ui_rings_t;
 
+/* One Clawd; it animates while its face is showing, as its state says. */
+typedef struct {
+    lv_obj_t *face;
+    lv_obj_t *root;
+    lv_obj_t *body;
+    lv_obj_t *arms;
+    lv_obj_t *eyes[2];
+    lv_obj_t *legs[4];
+    lv_obj_t *zzz;
+    int px;
+    metrics_claude_state_t state;
+    uint32_t color;
+} ui_clawd_t;
+
+/* Claude usage: 5-hour limit ring outside, weekly ring inside, a small Clawd
+ * over the 5-hour share (or the window's tokens without the status line). */
+typedef struct {
+    lv_obj_t *root;
+    lv_obj_t *session_arc;
+    lv_obj_t *week_arc;
+    ui_clawd_t clawd;
+    lv_obj_t *value;
+    lv_obj_t *reset;
+    lv_obj_t *week_name;
+    lv_obj_t *week;
+} ui_claude_t;
+
+/* A large Clawd between the model name and what Claude is doing. */
+typedef struct {
+    lv_obj_t *root;
+    lv_obj_t *session_arc;
+    lv_obj_t *model;
+    ui_clawd_t clawd;
+    lv_obj_t *status;
+    lv_obj_t *tokens;
+} ui_clawd_face_t;
+
 typedef struct {
     lv_obj_t *screen;
     const char *name;
@@ -84,6 +140,8 @@ typedef struct {
     ui_rings_t rings;
     ui_classic_t plus;
     ui_classic_t bar;
+    ui_claude_t claude;
+    ui_clawd_face_t clawd;
 } ui_screen_t;
 
 /* How the classic-based faces differ: column offset, gap under the title and
@@ -109,6 +167,7 @@ typedef struct {
 
 static ui_screen_t s_cpu;
 static ui_screen_t s_gpu;
+static uint32_t s_clawd_tick;
 
 static void style_screen_black(lv_obj_t *screen)
 {
@@ -298,6 +357,180 @@ static void create_rings(ui_screen_t *ui)
     f->mem = create_text(row, "--%", &lv_font_montserrat_14, COLOR_MEM);
 }
 
+static lv_obj_t *create_cell(lv_obj_t *parent, uint32_t color)
+{
+    lv_obj_t *cell = lv_obj_create(parent);
+    lv_obj_remove_style_all(cell);
+    lv_obj_set_style_bg_color(cell, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(cell, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    return cell;
+}
+
+static void place(lv_obj_t *obj, int x, int y, int w, int h)
+{
+    lv_obj_set_pos(obj, x, y);
+    lv_obj_set_size(obj, w, h);
+}
+
+/* Lay Clawd out: `bob` lifts the body, a lifted leg is half as long, and
+ * `eye_h` below px narrows the eyes to a slit (at the bottom when asleep). */
+static void clawd_pose(ui_clawd_t *c, int bob, bool lift_a, bool lift_b, int eye_h, bool eyes_low)
+{
+    static const int EYE_COL[2] = {4, 11};
+    static const int LEG_COL[4] = {3, 5, 10, 12};
+    int px = c->px;
+    place(c->body, 2 * px, -bob, 12 * px, 4 * px);
+    place(c->arms, 0, 2 * px - bob, CLAWD_COLS * px, px);
+    for (int i = 0; i < 2; i++) {
+        int y = px - bob + (eyes_low ? px - eye_h : (px - eye_h) / 2);
+        place(c->eyes[i], EYE_COL[i] * px, y, px, eye_h);
+    }
+    for (int i = 0; i < 4; i++) {
+        bool lifted = (i % 2 == 0) ? lift_a : lift_b;
+        place(c->legs[i], LEG_COL[i] * px, 4 * px, px, lifted ? px / 2 : px);
+    }
+}
+
+static void create_clawd(ui_clawd_t *c, lv_obj_t *face, lv_obj_t *parent, int px)
+{
+    c->face = face;
+    c->px = px;
+    c->color = COLOR_CLAUDE;
+    c->state = METRICS_CLAUDE_SLEEP;
+    c->root = lv_obj_create(parent);
+    lv_obj_remove_style_all(c->root);
+    lv_obj_set_size(c->root, CLAWD_COLS * px, CLAWD_ROWS * px);
+    lv_obj_clear_flag(c->root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(c->root, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+
+    c->body = create_cell(c->root, c->color);
+    c->arms = create_cell(c->root, c->color);
+    for (int i = 0; i < 2; i++) {
+        c->eyes[i] = create_cell(c->root, COLOR_BG);
+    }
+    for (int i = 0; i < 4; i++) {
+        c->legs[i] = create_cell(c->root, c->color);
+    }
+    c->zzz = NULL;
+    if (px >= CLAWD_LARGE_PX) {
+        c->zzz = create_text(c->root, "", &lv_font_montserrat_14, COLOR_TEXT_DIM);
+        lv_obj_set_pos(c->zzz, CLAWD_COLS * px - px, -2 * px);
+    }
+    clawd_pose(c, 0, false, false, px, false);
+}
+
+static void clawd_set_color(ui_clawd_t *c, uint32_t color)
+{
+    if (c->color == color) {
+        return;
+    }
+    c->color = color;
+    lv_obj_t *cells[] = {c->body, c->arms, c->legs[0], c->legs[1], c->legs[2], c->legs[3]};
+    for (size_t i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
+        lv_obj_set_style_bg_color(cells[i], lv_color_hex(color), 0);
+    }
+}
+
+/* Working: walks in place with a bob. Idle: blinks now and then. Asleep:
+ * eyes shut, dimmer, snoring on the large one. */
+static void clawd_animate(ui_clawd_t *c, uint32_t tick)
+{
+    if (c->root == NULL || lv_obj_has_flag(c->face, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+    int px = c->px;
+    int slit = px / 4 > 0 ? px / 4 : 1;
+    int bob = px / 4 > 0 ? px / 4 : 1;
+    const char *zzz = "";
+    switch (c->state) {
+    case METRICS_CLAUDE_WORK: {
+        uint32_t phase = tick % 4;
+        clawd_pose(c, (phase % 2) ? bob : 0, phase < 2, phase >= 2, px, false);
+        break;
+    }
+    case METRICS_CLAUDE_IDLE:
+        clawd_pose(c, 0, false, false, (tick % CLAWD_BLINK_TICKS == 0) ? slit : px, false);
+        break;
+    default: {
+        static const char *const SNORE[] = {"z", "z Z", "z Z z", ""};
+        clawd_pose(c, 0, false, false, slit, true);
+        zzz = SNORE[(tick / 5) % 4];
+        break;
+    }
+    }
+    if (c->zzz != NULL && strcmp(lv_label_get_text(c->zzz), zzz) != 0) {
+        lv_label_set_text(c->zzz, zzz);
+    }
+}
+
+static void clawd_set_state(ui_clawd_t *c, metrics_claude_state_t state, bool placeholder)
+{
+    c->state = placeholder ? METRICS_CLAUDE_IDLE : state;
+    bool dim = placeholder || state == METRICS_CLAUDE_SLEEP;
+    clawd_set_color(c, dim ? COLOR_CLAUDE_DIM : COLOR_CLAUDE);
+    clawd_animate(c, s_clawd_tick);
+}
+
+static void clawd_timer_cb(lv_timer_t *timer)
+{
+    (void) timer;
+    s_clawd_tick++;
+    ui_screen_t *screens[] = {&s_cpu, &s_gpu};
+    for (int i = 0; i < 2; i++) {
+        clawd_animate(&screens[i]->claude.clawd, s_clawd_tick);
+        clawd_animate(&screens[i]->clawd.clawd, s_clawd_tick);
+    }
+}
+
+/* A bold 12 name and a 14 px value side by side. */
+static lv_obj_t *create_pair(lv_obj_t *col, lv_obj_t **name, const char *name_text, uint32_t name_color,
+                             lv_obj_t **value)
+{
+    lv_obj_t *row = make_flex(col, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, 6, 0);
+    lv_obj_t *label = create_text(row, name_text, &lv_font_montserrat_bold_12, name_color);
+    lv_obj_set_style_text_letter_space(label, 1, 0);
+    if (name != NULL) {
+        *name = label;
+    }
+    *value = create_text(row, "--", &lv_font_montserrat_14, COLOR_TEXT_DIM);
+    return row;
+}
+
+static void create_claude(ui_screen_t *ui)
+{
+    ui_claude_t *f = &ui->claude;
+    f->root = make_face(ui->screen);
+    f->session_arc = create_arc(f->root, USAGE_ARC_SIZE, COLOR_CLAUDE, COLOR_CLAUDE_TRACK);
+    f->week_arc = create_arc(f->root, USAGE_ARC_SIZE - RING_GAP, COLOR_WEEK, COLOR_WEEK_TRACK);
+
+    lv_obj_t *col = create_column(f->root, 0);
+    create_clawd(&f->clawd, f->root, col, CLAWD_SMALL_PX);
+    lv_obj_set_style_margin_bottom(f->clawd.root, 8, 0);
+    f->value = create_text(col, "—", &lv_font_montserrat_bold_48, COLOR_TEXT_DIM);
+    lv_obj_set_style_margin_bottom(f->value, 6, 0);
+    create_pair(col, NULL, "5H", COLOR_CLAUDE, &f->reset);
+    lv_obj_t *week_row = create_pair(col, &f->week_name, "WK", COLOR_WEEK, &f->week);
+    lv_obj_set_style_margin_top(week_row, 2, 0);
+}
+
+static void create_clawd_face(ui_screen_t *ui)
+{
+    ui_clawd_face_t *f = &ui->clawd;
+    f->root = make_face(ui->screen);
+    f->session_arc = create_arc(f->root, USAGE_ARC_SIZE, COLOR_CLAUDE, COLOR_CLAUDE_TRACK);
+
+    lv_obj_t *col = create_column(f->root, 2);
+    f->model = create_text(col, "CLAUDE", &lv_font_montserrat_bold_12, COLOR_TEXT_DIM);
+    lv_obj_set_style_text_letter_space(f->model, 1, 0);
+    lv_obj_set_style_margin_bottom(f->model, 14, 0);
+    create_clawd(&f->clawd, f->root, col, CLAWD_LARGE_PX);
+    lv_obj_set_style_margin_bottom(f->clawd.root, 14, 0);
+    lv_obj_t *row = create_pair(col, &f->status, "ASLEEP", COLOR_TEXT_DIM, &f->tokens);
+    (void) row;
+}
+
 static void create_screen(ui_screen_t *ui, lv_display_t *disp, const char *name, const char *mem_name,
                           uint32_t accent, uint32_t track)
 {
@@ -312,6 +545,8 @@ static void create_screen(ui_screen_t *ui, lv_display_t *disp, const char *name,
     create_rings(ui);
     create_classic(ui, &ui->plus, &LAYOUT_PLUS);
     create_classic(ui, &ui->bar, &LAYOUT_BAR);
+    create_claude(ui);
+    create_clawd_face(ui);
     lv_obj_remove_flag(ui->classic.root, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -490,6 +725,131 @@ static void update_rings(ui_screen_t *ui, const metrics_temp_t *temp, float temp
     set_text_color(f->mem, temp->mem_valid ? COLOR_MEM : COLOR_TEXT_DIM);
 }
 
+/* "1.2M", "845K", "9.4K", "512": fits the 48 px font's K and M. */
+static void format_tokens(char *out, size_t len, float tokens)
+{
+    if (tokens < 1000.0f) {
+        snprintf(out, len, "%d", (int) tokens);
+    } else if (tokens < 9950.0f) {
+        snprintf(out, len, "%.1fK", tokens / 1e3f);
+    } else if (tokens < 999500.0f) {
+        snprintf(out, len, "%.0fK", tokens / 1e3f);
+    } else if (tokens < 99950000.0f) {
+        snprintf(out, len, "%.1fM", tokens / 1e6f);
+    } else {
+        snprintf(out, len, "%.0fM", tokens / 1e6f);
+    }
+}
+
+static void set_tokens(lv_obj_t *label, float tokens)
+{
+    char text[16];
+    format_tokens(text, sizeof(text), tokens);
+    lv_label_set_text(label, text);
+}
+
+static uint32_t limit_color(int pct, uint32_t normal)
+{
+    if (pct >= CLAUDE_HOT_PCT) {
+        return COLOR_HOT;
+    }
+    return pct >= CLAUDE_WARM_PCT ? COLOR_WARM : normal;
+}
+
+static bool claude_live(const metrics_claude_t *c, metrics_ui_state_t state)
+{
+    return state != METRICS_UI_WAITING && c->valid;
+}
+
+/* The outer ring: the 5-hour limit used, or else how far into the window we are. */
+static void update_session_arc(lv_obj_t *arc, const metrics_claude_t *c)
+{
+    int pct = 0;
+    if (c->has_session) {
+        pct = clamp_pct(c->session_pct, 100.0f);
+    } else if (c->has_left) {
+        pct = clamp_pct((float) (CLAUDE_BLOCK_MIN - c->left_min), (float) CLAUDE_BLOCK_MIN);
+    }
+    lv_arc_set_value(arc, pct);
+    set_arc_color(arc, c->has_session ? limit_color(pct, COLOR_CLAUDE) : COLOR_CLAUDE);
+}
+
+static void update_claude(ui_screen_t *ui, const metrics_claude_t *c, metrics_ui_state_t state)
+{
+    ui_claude_t *f = &ui->claude;
+    bool live = claude_live(c, state);
+    clawd_set_state(&f->clawd, c->state, !live);
+    if (!live) {
+        lv_arc_set_value(f->session_arc, 0);
+        lv_arc_set_value(f->week_arc, 0);
+        lv_label_set_text(f->value, "—");
+        lv_label_set_text(f->reset, "--");
+        lv_label_set_text(f->week, "--");
+        set_text_color(f->value, COLOR_TEXT_DIM);
+        return;
+    }
+
+    update_session_arc(f->session_arc, c);
+    uint32_t value_color = COLOR_TEXT;
+    if (c->has_session) {
+        int pct = clamp_pct(c->session_pct, 100.0f);
+        set_pct(f->value, true, pct);
+        value_color = limit_color(pct, COLOR_TEXT);
+    } else {
+        set_tokens(f->value, c->tokens);
+    }
+    set_text_color(f->value, state == METRICS_UI_STALE ? COLOR_TEXT_DIM : value_color);
+
+    if (!c->has_left) {
+        lv_label_set_text(f->reset, "--");
+    } else if (c->left_min >= 60) {
+        lv_label_set_text_fmt(f->reset, "%dh %02dm", c->left_min / 60, c->left_min % 60);
+    } else {
+        lv_label_set_text_fmt(f->reset, "%dm", c->left_min);
+    }
+
+    /* Without the status line the inner ring has nothing to show: today's
+     * tokens take the weekly row instead. */
+    if (c->has_week) {
+        int pct = clamp_pct(c->week_pct, 100.0f);
+        lv_obj_remove_flag(f->week_arc, LV_OBJ_FLAG_HIDDEN);
+        lv_arc_set_value(f->week_arc, pct);
+        set_arc_color(f->week_arc, limit_color(pct, COLOR_WEEK));
+        lv_label_set_text(f->week_name, "WK");
+        set_pct(f->week, true, pct);
+    } else {
+        lv_obj_add_flag(f->week_arc, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(f->week_name, "DAY");
+        set_tokens(f->week, c->today);
+    }
+}
+
+static void update_clawd_face(ui_screen_t *ui, const metrics_claude_t *c, metrics_ui_state_t state)
+{
+    ui_clawd_face_t *f = &ui->clawd;
+    bool live = claude_live(c, state);
+    clawd_set_state(&f->clawd, c->state, !live);
+    if (!live) {
+        lv_arc_set_value(f->session_arc, 0);
+        lv_label_set_text(f->model, "CLAUDE");
+        lv_label_set_text(f->status, state == METRICS_UI_WAITING ? "WAITING" : "NO DATA");
+        set_text_color(f->status, placeholder_title(state));
+        lv_label_set_text(f->tokens, "--");
+        return;
+    }
+
+    update_session_arc(f->session_arc, c);
+    lv_label_set_text(f->model, c->model[0] != '\0' ? c->model : "CLAUDE");
+    static const char *const STATUS[] = {
+        [METRICS_CLAUDE_SLEEP] = "ASLEEP",
+        [METRICS_CLAUDE_WORK] = "WORKING",
+        [METRICS_CLAUDE_IDLE] = "IDLE",
+    };
+    lv_label_set_text(f->status, STATUS[c->state]);
+    set_text_color(f->status, c->state == METRICS_CLAUDE_WORK ? COLOR_CLAUDE : COLOR_TEXT_DIM);
+    set_tokens(f->tokens, c->tokens);
+}
+
 static void show_face(ui_screen_t *ui, metrics_face_t face)
 {
     lv_obj_t *roots[METRICS_FACE_COUNT] = {
@@ -497,6 +857,8 @@ static void show_face(ui_screen_t *ui, metrics_face_t face)
         [METRICS_FACE_RINGS] = ui->rings.root,
         [METRICS_FACE_PLUS] = ui->plus.root,
         [METRICS_FACE_BAR] = ui->bar.root,
+        [METRICS_FACE_CLAUDE] = ui->claude.root,
+        [METRICS_FACE_CLAWD] = ui->clawd.root,
     };
     for (int i = 0; i < METRICS_FACE_COUNT; i++) {
         if (i == (int) face) {
@@ -509,7 +871,7 @@ static void show_face(ui_screen_t *ui, metrics_face_t face)
 
 /* Only the visible face is refreshed; a switch redraws it from the same snapshot. */
 static void update_screen(ui_screen_t *ui, metrics_face_t face, const metrics_temp_t *temp, float temp_max,
-                          metrics_ui_state_t state, int fan_rpm)
+                          const metrics_claude_t *claude, metrics_ui_state_t state, int fan_rpm)
 {
     if (face >= METRICS_FACE_COUNT) {
         face = METRICS_FACE_CLASSIC;
@@ -523,6 +885,12 @@ static void update_screen(ui_screen_t *ui, metrics_face_t face, const metrics_te
         break;
     case METRICS_FACE_BAR:
         update_classic(ui, &ui->bar, temp, state, fan_rpm);
+        break;
+    case METRICS_FACE_CLAUDE:
+        update_claude(ui, claude, state);
+        break;
+    case METRICS_FACE_CLAWD:
+        update_clawd_face(ui, claude, state);
         break;
     default:
         update_classic(ui, &ui->classic, temp, state, fan_rpm);
@@ -538,6 +906,7 @@ void ui_watch_create(lv_display_t *disp_cpu, lv_display_t *disp_gpu)
 
     lv_display_set_default(disp_gpu);
     create_screen(&s_gpu, disp_gpu, "GPU", "VRAM", COLOR_USAGE_GPU, COLOR_TRACK_GPU);
+    lv_timer_create(clawd_timer_cb, CLAWD_TICK_MS, NULL);
     ESP_LOGI(TAG, "Watch UI created");
 }
 
@@ -556,8 +925,8 @@ void ui_watch_update(const metrics_snapshot_t *snap)
     if (snap == 0) {
         return;
     }
-    update_screen(&s_cpu, snap->cpu_face, &snap->cpu, METRICS_CPU_TEMP_MAX_DEFAULT, snap->state,
+    update_screen(&s_cpu, snap->cpu_face, &snap->cpu, METRICS_CPU_TEMP_MAX_DEFAULT, &snap->claude, snap->state,
                   fan_rpm_by_id(snap, "cpu"));
-    update_screen(&s_gpu, snap->gpu_face, &snap->gpu, METRICS_GPU_TEMP_MAX_DEFAULT, snap->state,
+    update_screen(&s_gpu, snap->gpu_face, &snap->gpu, METRICS_GPU_TEMP_MAX_DEFAULT, &snap->claude, snap->state,
                   fan_rpm_by_id(snap, "gpu"));
 }

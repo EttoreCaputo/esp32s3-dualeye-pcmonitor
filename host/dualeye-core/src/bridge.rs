@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::claude::ClaudeUsage;
 use crate::sensors::Collector;
 use crate::serial;
 use crate::snapshot::{Faces, Snapshot};
@@ -95,6 +96,7 @@ impl Drop for Bridge {
 /// Run the bridge on the current thread until `stop` is set.
 pub fn run(config: &BridgeConfig, stop: &AtomicBool, on_event: EventSink) {
     let mut collector = Collector::new();
+    let mut claude = ClaudeUsage::new();
     let mut delay = Duration::from_secs(1);
     while !stop.load(Ordering::Relaxed) {
         let Some(port) = config.port.clone().or_else(serial::detect_board) else {
@@ -104,7 +106,7 @@ pub fn run(config: &BridgeConfig, stop: &AtomicBool, on_event: EventSink) {
             continue;
         };
         let started = Instant::now();
-        if let Err(err) = session(&port, config, stop, &mut collector, &on_event) {
+        if let Err(err) = session(&port, config, stop, &mut collector, &mut claude, &on_event) {
             on_event(BridgeEvent::Disconnected {
                 port,
                 reason: err.to_string(),
@@ -124,6 +126,7 @@ fn session(
     config: &BridgeConfig,
     stop: &AtomicBool,
     collector: &mut Collector,
+    claude: &mut ClaudeUsage,
     on_event: &EventSink,
 ) -> io::Result<()> {
     let mut ser = serial::open(port)?;
@@ -143,6 +146,7 @@ fn session(
         while !stop.load(Ordering::Relaxed) {
             let mut snapshot = collector.sample();
             snapshot.face = Some(*config.faces.lock().unwrap());
+            snapshot.claude = claude.sample();
             let sent = snapshot.is_sendable();
             if sent {
                 ser.write_all(snapshot.to_line().as_bytes())?;

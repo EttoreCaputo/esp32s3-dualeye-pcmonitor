@@ -4,11 +4,7 @@
  * Opts: --font /tmp/Montserrat-Bold.ttf --size 48 --bpp 4 --format lvgl --no-compress --no-prefilter --no-kerning --lv-font-name lv_font_montserrat_bold_48 --range 0x25,0x2E,0x30-0x39,0x4B,0x4D,0xB0,0x2014 -o main/fonts/lv_font_montserrat_bold_48.c
  ******************************************************************************/
 
-#ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #include "lvgl.h"
-#else
-#include "lvgl/lvgl.h"
-#endif
 
 #ifndef LV_FONT_MONTSERRAT_BOLD_48
 #define LV_FONT_MONTSERRAT_BOLD_48 1

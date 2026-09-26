@@ -15,9 +15,12 @@
     RING_GAP,
     USAGE_ARC_SIZE,
     WARN_PATH,
+    clawdPose,
+    type ClaudeView,
     type DeviceId,
     type Screen,
   } from "./firmware";
+  import { clawdClock, startClawdClock } from "./clawd.svelte";
   import type { BoardState } from "./monitor.svelte";
 
   let { id, screen, board, size, pixels = false }: {
@@ -32,6 +35,7 @@
   const lit = $derived(board !== "off");
   const ui = $derived(board !== "off" && board !== "boot");
   const C = LCD / 2;
+  startClawdClock();
 </script>
 
 <!-- lv_arc: `value` 0–100 over `sweep` degrees, starting `rotation` degrees clockwise from 3 o'clock. -->
@@ -67,6 +71,24 @@
   </g>
 {/snippet}
 
+<!-- create_clawd(): 16 × 5 cells of px; the large one snores. -->
+{#snippet clawd(px: number, c: ClaudeView, marginBottom: number)}
+  {@const pose = clawdPose(px, c.mascot, clawdClock.tick)}
+  <svg class="clawd" width={16 * px} height={5 * px} style:margin-bottom="{marginBottom}px" aria-hidden="true">
+    {#each pose.body as r, i (i)}<rect x={r.x} y={r.y} width={r.w} height={r.h} fill={c.mascotColor} />{/each}
+    {#each pose.eyes as r, i (i)}<rect x={r.x} y={r.y} width={r.w} height={r.h} fill="#000" />{/each}
+    {#if px >= 8 && pose.zzz}<text class="zzz" x={15 * px} y={-2 * px + 12} fill={COLOR.textDim}>{pose.zzz}</text>{/if}
+  </svg>
+{/snippet}
+
+<!-- create_pair(): a bold 12 name and a dim 14 px value. -->
+{#snippet pair(name: string, color: string, value: string, marginTop = 0)}
+  <div class="row" style:gap="6px" style:margin-top="{marginTop}px">
+    <span class="title" style:color={color}>{name}</span>
+    <span class="dim">{value}</span>
+  </div>
+{/snippet}
+
 {#snippet title(marginBottom: number)}
   <div class="title-row" style:color={screen.labelColor} style:margin-bottom="{marginBottom}px">
     {#if screen.warn}
@@ -79,14 +101,37 @@
 <div class="panel" class:lit style:--scale={size / LCD} style:width="{size}px" style:height="{size}px">
   <div class="fb" class:ui>
     <svg class="rings" viewBox="0 0 {LCD} {LCD}" aria-hidden="true">
-      {@render arc(USAGE_ARC_SIZE, dev.accent, dev.track, screen.usagePct)}
-      {#if screen.face === "rings"}
-        {@render arc(USAGE_ARC_SIZE - RING_GAP, screen.tempRing, COLOR.tempTrack, screen.tempPct)}
-        {@render arc(USAGE_ARC_SIZE - 2 * RING_GAP, COLOR.mem, COLOR.memTrack, screen.memPct)}
+      {#if screen.claude}
+        {@render arc(USAGE_ARC_SIZE, screen.claude.sessionColor, COLOR.claudeTrack, screen.claude.sessionPct)}
+        {#if screen.face === "claude" && screen.claude.showWeek}
+          {@render arc(USAGE_ARC_SIZE - RING_GAP, screen.claude.weekColor, COLOR.weekTrack, screen.claude.weekPct)}
+        {/if}
+      {:else}
+        {@render arc(USAGE_ARC_SIZE, dev.accent, dev.track, screen.usagePct)}
+        {#if screen.face === "rings"}
+          {@render arc(USAGE_ARC_SIZE - RING_GAP, screen.tempRing, COLOR.tempTrack, screen.tempPct)}
+          {@render arc(USAGE_ARC_SIZE - 2 * RING_GAP, COLOR.mem, COLOR.memTrack, screen.memPct)}
+        {/if}
       {/if}
     </svg>
 
-    {#if screen.face === "rings"}
+    {#if screen.claude}
+      {@const c = screen.claude}
+      {#if screen.face === "claude"}
+        <div class="col" style:--y="0px">
+          {@render clawd(4, c, 8)}
+          <div class="value" style:color={c.valueColor} style:margin-bottom="6px">{c.value}</div>
+          {@render pair("5H", COLOR.claude, c.reset)}
+          {@render pair(c.weekName, COLOR.week, c.week, 2)}
+        </div>
+      {:else}
+        <div class="col" style:--y="2px">
+          <span class="title" style:color={COLOR.textDim} style:margin-bottom="14px">{c.model}</span>
+          {@render clawd(8, c, 14)}
+          {@render pair(c.status, c.statusColor, c.tokens)}
+        </div>
+      {/if}
+    {:else if screen.face === "rings"}
       <div class="col" style:--y="2px">
         {@render title(6)}
         <div class="value" style:color={screen.valueColor}>{screen.value}</div>
@@ -96,7 +141,7 @@
         </div>
       </div>
     {:else}
-      {@const layout = CLASSIC_LAYOUT[screen.face]}
+      {@const layout = CLASSIC_LAYOUT[screen.face as keyof typeof CLASSIC_LAYOUT]}
       <div class="col" style:--y="{layout.y}px">
         {@render title(layout.titleGap)}
         <div class="value" style:color={screen.valueColor} style:margin-bottom="2px">{screen.value}</div>
@@ -231,6 +276,13 @@
   .fan {
     width: 16px;
     height: 16px;
+  }
+  .clawd {
+    display: block;
+    overflow: visible;
+  }
+  .zzz {
+    font: 500 14px/16px "Montserrat", sans-serif;
   }
 
   /* 240 × 240 pixel lattice; only legible when drawn large (the loupe). */

@@ -9,6 +9,9 @@
 //! Identifying and flashing the board go through esptool, which the app sets
 //! up by itself on first use (Python + virtualenv in its data folder); the
 //! bridge is stopped meanwhile so esptool can own the port, then started again.
+//!
+//! For the Claude faces the app can also point Claude Code's status line at
+//! itself (`main.rs` handles that invocation); see `dualeye_core::claude`.
 
 mod instances;
 
@@ -19,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use dualeye_core::claude::statusline::{self, LinkStatus};
 use dualeye_core::flasher::setup;
 use dualeye_core::{
     Bridge, BridgeConfig, BridgeEvent, ChipInfo, Collector, Esptool, Faces, FlashEvent, PortInfo, Reading, Snapshot, serial,
@@ -224,6 +228,23 @@ async fn flash_board(app: AppHandle, port: Option<String>) -> Result<(), String>
     .await
 }
 
+#[tauri::command]
+fn claude_link() -> LinkStatus {
+    statusline::status()
+}
+
+/// Make this binary Claude Code's status line, chaining to the one it replaces.
+#[tauri::command]
+fn claude_connect() -> Result<LinkStatus, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    statusline::connect(&exe).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn claude_disconnect() -> Result<LinkStatus, String> {
+    statusline::disconnect().map_err(|e| e.to_string())
+}
+
 fn emit_flash(app: &AppHandle, event: FlashEvent) {
     let _ = app.emit("flash", &event);
 }
@@ -378,7 +399,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![status, list_ports, set_port, set_faces, readings, firmware_info, identify_board, flash_board])
+        .invoke_handler(tauri::generate_handler![status, list_ports, set_port, set_faces, readings, firmware_info, identify_board, flash_board, claude_link, claude_connect, claude_disconnect])
         .build(tauri::generate_context!())
         .expect("failed to build the DualEye app")
         .run(|app, event| match event {

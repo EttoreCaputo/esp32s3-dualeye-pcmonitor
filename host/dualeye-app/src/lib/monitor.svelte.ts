@@ -12,7 +12,19 @@ import { DEFAULT_FACES, type Faces } from "./firmware";
 export type Memory = { used_mb: number; total_mb: number };
 export type Metrics = { temp_c?: number; load_pct?: number; clock_mhz?: number; power_w?: number; mem?: Memory };
 export type Fan = { id: string; rpm: number };
-export type Snapshot = { v: number; ts: number; cpu?: Metrics; gpu?: Metrics; fans?: Fan[]; face?: Faces };
+export type ClaudeState = "work" | "idle" | "sleep";
+/** `ClaudeMetrics` in dualeye-core: tokens in the 5-hour window and today, limits from the status line. */
+export type ClaudeMetrics = {
+  tok: number;
+  today: number;
+  left_min?: number;
+  s_pct?: number;
+  w_pct?: number;
+  state: ClaudeState;
+  model?: string;
+};
+export type ClaudeLink = { connected: boolean; chained: string | null; last_update_s: number | null; settings_path: string | null };
+export type Snapshot = { v: number; ts: number; cpu?: Metrics; gpu?: Metrics; fans?: Fan[]; face?: Faces; claude?: ClaudeMetrics };
 export type PortInfo = { name: string; vid: number; pid: number; product: string | null; is_board: boolean };
 export type Reading = { source: string; label: string; value: number; unit: string };
 export type Esptool = { python: string; version: string };
@@ -236,6 +248,19 @@ class Monitor {
     if (!this.preview) await invoke("set_faces", { faces });
   }
 
+  async claudeLink(): Promise<ClaudeLink> {
+    if (this.preview) return previewClaudeLink;
+    return invoke<ClaudeLink>("claude_link");
+  }
+
+  async claudeConnect(connect: boolean): Promise<ClaudeLink> {
+    if (this.preview) {
+      previewClaudeLink = { ...previewClaudeLink, connected: connect, last_update_s: connect ? 3 : null };
+      return previewClaudeLink;
+    }
+    return invoke<ClaudeLink>(connect ? "claude_connect" : "claude_disconnect");
+  }
+
   async readings(): Promise<Reading[]> {
     if (this.preview) return previewReadings(this.last);
     return invoke<Reading[]>("readings");
@@ -249,6 +274,8 @@ export function fanRpm(s: Snapshot | null, id: string): number | undefined {
 }
 
 // ── Preview feed ────────────────────────────────────────────────────────────
+
+let previewClaudeLink: ClaudeLink = { connected: false, chained: null, last_update_s: null, settings_path: "~/.claude/settings.json" };
 
 function startPreviewFeed(emit: (e: BridgeEvent) => void, faces: () => Faces) {
   const boot = [
@@ -293,6 +320,15 @@ function startPreviewFeed(emit: (e: BridgeEvent) => void, faces: () => Faces) {
           { id: "gpu", rpm: gpuLoad > 25 ? Math.round(900 + gpuLoad * 14) : 0 },
         ],
         face: { ...faces() },
+        // Claude works in bursts and naps between them.
+        claude: {
+          tok: Math.round(820_000 + t * 2400),
+          today: Math.round(3_900_000 + t * 2400),
+          left_min: Math.max(0, 133 - Math.floor(t / 60)),
+          ...(previewClaudeLink.connected ? { s_pct: Math.min(100, Math.round(42 + t / 20)), w_pct: 18 } : {}),
+          state: t % 90 < 50 ? "work" : t % 90 < 80 ? "idle" : "sleep",
+          model: "OPUS 5.5",
+        },
       };
       emit({ kind: "snapshot", snapshot, sent: true });
       const line = `I (${Math.round(t * 1000 + 2000)}) metrics_io: cpu ${Math.round(snapshot.cpu!.temp_c!)}C gpu ${Math.round(snapshot.gpu!.temp_c!)}C`;

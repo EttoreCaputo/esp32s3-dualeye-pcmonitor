@@ -350,6 +350,8 @@ static metrics_face_t face_from_name(const char *name)
         [METRICS_FACE_RINGS] = "rings",
         [METRICS_FACE_PLUS] = "plus",
         [METRICS_FACE_BAR] = "bar",
+        [METRICS_FACE_CLAUDE] = "claude",
+        [METRICS_FACE_CLAWD] = "clawd",
     };
     for (int i = 0; i < METRICS_FACE_COUNT; i++) {
         if (strcmp(name, names[i]) == 0) {
@@ -392,6 +394,61 @@ static bool parse_face_object(js_t *j, metrics_snapshot_t *snap)
     }
 }
 
+static metrics_claude_state_t claude_state_from_name(const char *name)
+{
+    if (strcmp(name, "work") == 0) {
+        return METRICS_CLAUDE_WORK;
+    }
+    return strcmp(name, "idle") == 0 ? METRICS_CLAUDE_IDLE : METRICS_CLAUDE_SLEEP;
+}
+
+static bool parse_claude_object(js_t *j, metrics_claude_t *claude)
+{
+    if (!consume(j, '{')) {
+        return false;
+    }
+    for (;;) {
+        char key[32];
+        bool done = false;
+        if (!object_key(j, key, sizeof(key), &done)) {
+            return false;
+        }
+        if (done) {
+            claude->valid = true;
+            return true;
+        }
+        bool ok = true;
+        if (strcmp(key, "tok") == 0) {
+            ok = read_number_field(j, &claude->tokens);
+        } else if (strcmp(key, "today") == 0) {
+            ok = read_number_field(j, &claude->today);
+        } else if (strcmp(key, "left_min") == 0) {
+            float value = 0.0f;
+            ok = read_number_field(j, &value);
+            claude->left_min = (int) value;
+            claude->has_left = ok;
+        } else if (strcmp(key, "s_pct") == 0) {
+            ok = read_number_field(j, &claude->session_pct);
+            claude->has_session = ok;
+        } else if (strcmp(key, "w_pct") == 0) {
+            ok = read_number_field(j, &claude->week_pct);
+            claude->has_week = ok;
+        } else if (strcmp(key, "state") == 0) {
+            char name[12];
+            ok = parse_string(j, name, sizeof(name));
+            claude->state = claude_state_from_name(name);
+        } else if (strcmp(key, "model") == 0) {
+            ok = parse_string(j, claude->model, sizeof(claude->model));
+        } else {
+            ok = skip_value(j, 1);
+        }
+        if (!ok) {
+            return false;
+        }
+        object_sep(j);
+    }
+}
+
 esp_err_t metrics_parse_line(const char *line, metrics_snapshot_t *out)
 {
     if (line == NULL || out == NULL) {
@@ -423,6 +480,8 @@ esp_err_t metrics_parse_line(const char *line, metrics_snapshot_t *out)
             ok = parse_fans(&j, out);
         } else if (strcmp(key, "face") == 0) {
             ok = parse_face_object(&j, out);
+        } else if (strcmp(key, "claude") == 0) {
+            ok = parse_claude_object(&j, &out->claude);
         } else if (strcmp(key, "ts") == 0) {
             double value = 0.0;
             ok = parse_number(&j, &value);

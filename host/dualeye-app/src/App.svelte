@@ -20,7 +20,7 @@
 
   // The face the board is on: from the last line it got, classic until the first one.
   const screen = (id: DeviceId) =>
-    screenFor(id, shown?.face?.[id] ?? "classic", shown?.[id], board === "stale", board === "waiting", fanRpm(shown, id));
+    screenFor(id, shown?.face?.[id] ?? "classic", shown?.[id], board === "stale", board === "waiting", fanRpm(shown, id), shown?.claude);
   const glow = (id: DeviceId) => {
     const m = shown?.[id];
     const active = (board === "live" || board === "stale") && m?.temp_c !== undefined;

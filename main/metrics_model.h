@@ -21,14 +21,40 @@ typedef enum {
     METRICS_UI_ERROR,
 } metrics_ui_state_t;
 
-/** Watch face of one screen. Names on the wire: classic, rings, plus, bar. */
+/** Watch face of one screen. Names on the wire: classic, rings, plus, bar,
+ * claude, clawd. */
 typedef enum {
     METRICS_FACE_CLASSIC = 0,
     METRICS_FACE_RINGS,
     METRICS_FACE_PLUS,
     METRICS_FACE_BAR,
+    METRICS_FACE_CLAUDE,
+    METRICS_FACE_CLAWD,
     METRICS_FACE_COUNT,
 } metrics_face_t;
+
+/** What Claude Code is doing. Names on the wire: sleep, work, idle. */
+typedef enum {
+    METRICS_CLAUDE_SLEEP = 0,
+    METRICS_CLAUDE_WORK,
+    METRICS_CLAUDE_IDLE,
+} metrics_claude_state_t;
+
+/* Claude Code usage for the claude and clawd faces; the has_* flags mark the
+ * optional fields the host sent. */
+typedef struct {
+    bool valid;
+    float tokens;
+    float today;
+    bool has_left;
+    int left_min;
+    bool has_session;
+    float session_pct;
+    bool has_week;
+    float week_pct;
+    metrics_claude_state_t state;
+    char model[16];
+} metrics_claude_t;
 
 typedef struct {
     bool valid;
@@ -57,6 +83,7 @@ typedef struct {
     size_t fan_count;
     metrics_face_t cpu_face;
     metrics_face_t gpu_face;
+    metrics_claude_t claude;
     metrics_ui_state_t state;
 } metrics_snapshot_t;
 

@@ -2,8 +2,8 @@
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import Eye from "./Eye.svelte";
-  import { DEVICES, FACES, screenFor, type DeviceId, type Face } from "./firmware";
-  import { fanRpm, monitor, type FirmwareInfo, type PortInfo, type Reading } from "./monitor.svelte";
+  import { DEVICES, FACES, formatTokens, isClaudeFace, screenFor, type DeviceId, type Face } from "./firmware";
+  import { fanRpm, monitor, type ClaudeLink, type FirmwareInfo, type PortInfo, type Reading } from "./monitor.svelte";
 
   type Tab = "connection" | "display" | "device" | "sensors" | "console";
   const TABS: [Tab, string][] = [
@@ -21,6 +21,9 @@
   let confirming = $state(false);
   let readings = $state<Reading[]>([]);
   let consoleEl = $state<HTMLElement>();
+  let claudeLink = $state<ClaudeLink | null>(null);
+  let claudeError = $state("");
+  let claudeBusy = $state(false);
   let follow = $state(true);
 
   $effect(() => {
@@ -55,6 +58,34 @@
       confirming = false;
     };
   });
+
+  $effect(() => {
+    if (!open || tab !== "display") return;
+    let alive = true;
+    const load = () => monitor.claudeLink().then((l) => alive && (claudeLink = l));
+    load();
+    const id = setInterval(load, 3000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  });
+
+  async function linkClaude(connect: boolean) {
+    claudeBusy = true;
+    claudeError = "";
+    try {
+      claudeLink = await monitor.claudeConnect(connect);
+    } catch (e) {
+      claudeError = String(e);
+    } finally {
+      claudeBusy = false;
+    }
+  }
+
+  const claudeUsage = $derived(monitor.last?.claude);
+  const usesClaude = $derived(isClaudeFace(monitor.faces.cpu) || isClaudeFace(monitor.faces.gpu));
+  const ago = (s: number) => (s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`);
 
   // The port esptool will use: the pinned one, else the only Espressif device plugged in.
   const boards = $derived(ports.filter((p) => p.is_board));
@@ -97,7 +128,7 @@
     ["gpu", "Right screen"],
   ];
   // Thumbnails use the host's latest sample, so they have data even with no board attached.
-  const preview = (id: DeviceId, face: Face) => screenFor(id, face, monitor.last?.[id], false, false, fanRpm(monitor.last, id));
+  const preview = (id: DeviceId, face: Face) => screenFor(id, face, monitor.last?.[id], false, false, fanRpm(monitor.last, id), monitor.last?.claude);
   const pick = (id: DeviceId, face: Face) => monitor.setFaces({ ...monitor.faces, [id]: face });
 
   const hex = (n: number) => n.toString(16).padStart(4, "0");
@@ -186,6 +217,48 @@
             <p class="fblurb">{FACES.find((f) => f.id === current)?.blurb}</p>
           </section>
         {/each}
+
+        <section class="claude" class:dimmed={!usesClaude}>
+          <h3>Claude Code</h3>
+          <p class="hint">
+            The Claude faces count tokens from Claude Code's transcripts on this computer.
+            {#if claudeUsage}
+              This 5-hour window: {formatTokens(claudeUsage.tok)} · today: {formatTokens(claudeUsage.today)}.
+            {:else}
+              None found yet.
+            {/if}
+          </p>
+          {#if claudeLink?.connected}
+            <dl class="facts">
+              <div><dt>Status line</dt><dd>Connected</dd></div>
+              <div>
+                <dt>Last update</dt>
+                <dd>{claudeLink.last_update_s === null ? "Waiting" : ago(claudeLink.last_update_s)}</dd>
+              </div>
+              {#if claudeLink.chained}
+                <div class="wide"><dt>Also shows your status line</dt><dd class="small">{claudeLink.chained}</dd></div>
+              {/if}
+            </dl>
+            {#if claudeLink.last_update_s === null}
+              <p class="hint">Limits show up after Claude Code's next reply. They're only reported on Pro and Max plans.</p>
+            {/if}
+            <div class="actions">
+              <button class="btn" disabled={claudeBusy} onclick={() => linkClaude(false)}>Disconnect</button>
+            </div>
+          {:else}
+            <p class="hint">
+              Connect the status line to add your plan's 5-hour and weekly limits. This sets <code>statusLine</code> in
+              <code>{claudeLink?.settings_path ?? "~/.claude/settings.json"}</code>, keeps a backup, and your current status line keeps
+              working through it.
+            </p>
+            <div class="actions">
+              <button class="btn primary" disabled={claudeBusy || !claudeLink} onclick={() => linkClaude(true)}>Connect status line</button>
+            </div>
+          {/if}
+          {#if claudeError}
+            <p class="hint error">{claudeError}</p>
+          {/if}
+        </section>
       {:else if tab === "device"}
         <section>
           <h3>Board</h3>
@@ -465,7 +538,7 @@
 
   .faces {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 8px;
   }
   .face {
@@ -509,6 +582,16 @@
     margin: 10px 0 0;
     font: 400 12px/1.4 var(--sans);
     color: var(--faint);
+  }
+
+  .claude.dimmed {
+    opacity: 0.7;
+  }
+  .claude .facts {
+    margin-bottom: 12px;
+  }
+  .hint.error {
+    color: var(--hot);
   }
 
   .alert {
