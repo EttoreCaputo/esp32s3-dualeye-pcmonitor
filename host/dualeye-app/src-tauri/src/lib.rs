@@ -25,7 +25,7 @@ use std::time::Instant;
 use dualeye_core::claude::statusline::{self, LinkStatus};
 use dualeye_core::flasher::setup;
 use dualeye_core::{
-    Bridge, BridgeConfig, BridgeEvent, ChipInfo, Collector, Esptool, Faces, FlashEvent, PortInfo, Reading, Snapshot, serial,
+    BoardFirmware, Bridge, BridgeConfig, BridgeEvent, ChipInfo, Collector, Esptool, Faces, FlashEvent, ImageInfo, PortInfo, Reading, Snapshot, firmware, serial,
 };
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem};
@@ -54,6 +54,8 @@ struct Link {
     sent: Option<Snapshot>,
     sent_at: Option<Instant>,
     connected_at: Option<Instant>,
+    /// What the board said it runs, since it connected.
+    firmware: Option<BoardFirmware>,
     logs: VecDeque<String>,
 }
 
@@ -69,6 +71,7 @@ impl Link {
                 self.port = Some(port.clone());
                 self.message = None;
                 self.sent = None;
+                self.firmware = None;
                 self.connected_at = Some(Instant::now());
             }
             BridgeEvent::Snapshot { snapshot, sent } => {
@@ -84,6 +87,7 @@ impl Link {
                 }
                 self.logs.push_back(line.clone());
             }
+            BridgeEvent::Firmware { firmware } => self.firmware = Some(firmware.clone()),
             BridgeEvent::Disconnected { reason, .. } => {
                 self.kind = "offline";
                 self.message = Some(reason.clone());
@@ -129,6 +133,7 @@ struct Status {
     sent: Option<Snapshot>,
     sent_age_ms: Option<u64>,
     connected_age_ms: Option<u64>,
+    firmware: Option<BoardFirmware>,
     logs: Vec<String>,
     port_setting: Option<String>,
     faces: Faces,
@@ -146,6 +151,7 @@ fn status(state: State<AppState>) -> Status {
         sent: link.sent.clone(),
         sent_age_ms: age(link.sent_at),
         connected_age_ms: age(link.connected_at),
+        firmware: link.firmware.clone(),
         logs: link.logs.iter().cloned().collect(),
         port_setting: state.settings.lock().unwrap().port.clone(),
         faces: *state.faces.lock().unwrap(),
@@ -200,6 +206,8 @@ async fn readings(app: AppHandle) -> Result<Vec<Reading>, String> {
 #[derive(Serialize)]
 struct FirmwareInfo {
     size: usize,
+    /// The bundled image's app descriptor: its version is what the board gets when flashed.
+    bundled: Option<ImageInfo>,
     /// `None` until esptool has been set up (done on first identify/flash).
     esptool: Option<Esptool>,
 }
@@ -208,7 +216,7 @@ struct FirmwareInfo {
 async fn firmware_info(app: AppHandle) -> Result<FirmwareInfo, String> {
     let dir = app.state::<AppState>().esptool_dir.clone();
     let esptool = tauri::async_runtime::spawn_blocking(move || Esptool::installed(&dir)).await.map_err(|e| e.to_string())?;
-    Ok(FirmwareInfo { size: FIRMWARE.len(), esptool })
+    Ok(FirmwareInfo { size: FIRMWARE.len(), bundled: firmware::image_info(FIRMWARE), esptool })
 }
 
 #[tauri::command]
@@ -418,4 +426,17 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The update offer compares the board against this; a merged image without it never offers one.
+    #[test]
+    fn bundled_firmware_reports_its_version() {
+        let info = firmware::image_info(FIRMWARE).expect("app descriptor in build/merged-binary.bin");
+        let want = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../version.txt")).trim();
+        assert_eq!(info.version, want, "rebuild the firmware: idf.py build merge-bin");
+    }
 }

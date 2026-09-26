@@ -1,0 +1,186 @@
+# On every push to main: build the firmware, then the desktop app for Linux,
+# macOS (Apple Silicon and Intel) and Windows with that firmware inside, and
+# publish them all on the GitHub release `v<app version>`.
+#
+# The release is named after `version` in host/dualeye-app/src-tauri/tauri.conf.json.
+# Bump it for a new release; until then each merge refreshes the assets of
+# the current one. The firmware's own version is version.txt, and
+# FIRMWARE_CHANGELOG.md must have a section for it.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  ESP_IDF_VERSION: v6.1
+
+jobs:
+  firmware:
+    name: Firmware
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version.txt has a changelog entry
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' < version.txt)"
+          if ! grep -Eq "^##[[:space:]]+v?${version//./\\.}[[:space:]]*$" FIRMWARE_CHANGELOG.md; then
+            echo "::error file=FIRMWARE_CHANGELOG.md::No '## $version' section for the version in version.txt"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build with ESP-IDF ${{ env.ESP_IDF_VERSION }}
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.ESP_IDF_VERSION }}
+          target: esp32s3
+          command: idf.py build merge-bin
+
+      - name: Check the image carries version.txt
+        run: |
+          built="$(python3 - <<'EOF'
+          import struct
+          image = open("build/merged-binary.bin", "rb").read()
+          # First app partition in the table at 0x8000, then its esp_app_desc_t.
+          for i in range(0x8000, 0x8C00, 32):
+              if image[i:i + 2] != b"\xaa\x50":
+                  break
+              if image[i + 2] == 0:
+                  desc = struct.unpack_from("<I", image, i + 4)[0] + 32
+                  print(image[desc + 16:desc + 48].split(b"\0")[0].decode())
+                  break
+          EOF
+          )"
+          echo "image version: $built"
+          test "$built" = "${{ steps.version.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: build/merged-binary.bin
+          if-no-files-found: error
+
+  release:
+    name: Prepare release
+    needs: firmware
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.release.outputs.id }}
+      tag: ${{ steps.release.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FIRMWARE: ${{ needs.firmware.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: build
+
+      - name: Create or refresh the release
+        id: release
+        run: |
+          app="$(jq -r .version host/dualeye-app/src-tauri/tauri.conf.json)"
+          tag="v$app"
+          {
+            echo "Desktop app $app with DualEye firmware **$FIRMWARE** inside. Plug the board in, open the app, and it offers to flash the firmware when the board runs an older one."
+            echo
+            echo "### Firmware $FIRMWARE"
+            awk -v v="$FIRMWARE" '/^## /{p = ($2 == v || $2 == "v" v); next} p' FIRMWARE_CHANGELOG.md
+            echo
+            echo "### Downloads"
+            echo "- **Windows**: the \`.msi\` or \`-setup.exe\` installer."
+            echo "- **macOS**: the \`.dmg\` (\`aarch64\` for Apple Silicon, \`x64\` for Intel). The app isn't signed: the first time, right-click it and choose Open, or run \`xattr -cr /Applications/DualEye.app\`."
+            echo "- **Linux**: the \`.AppImage\`, \`.deb\` or \`.rpm\`."
+            echo "- \`dualeye-firmware-$FIRMWARE.bin\`: the merged image alone, to flash at 0x0 with esptool."
+            echo
+            echo "Built from ${GITHUB_SHA::7}."
+          } > notes.md
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release edit "$tag" --title "DualEye $app" --notes-file notes.md
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --title "DualEye $app" --notes-file notes.md
+          fi
+          cp build/merged-binary.bin "dualeye-firmware-$FIRMWARE.bin"
+          gh release upload "$tag" "dualeye-firmware-$FIRMWARE.bin" --clobber
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .id)" >> "$GITHUB_OUTPUT"
+
+  app:
+    name: App (${{ matrix.name }})
+    needs: [firmware, release]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+            args: ""
+          - name: Windows
+            os: windows-latest
+            args: ""
+          - name: macOS Apple Silicon
+            os: macos-latest
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - name: macOS Intel
+            os: macos-latest
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The app embeds build/merged-binary.bin (see FIRMWARE in src-tauri/src/lib.rs).
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: build
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: host/dualeye-app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: host -> target
+          key: ${{ matrix.target }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: host/dualeye-app
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          projectPath: host/dualeye-app
+          releaseId: ${{ needs.release.outputs.id }}
+          args: ${{ matrix.args }}

@@ -3,12 +3,14 @@
   import Drawer from "./lib/Drawer.svelte";
   import Telemetry from "./lib/Telemetry.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
+  import UpdateBanner from "./lib/UpdateBanner.svelte";
   import { heatColor, screenFor, type DeviceId } from "./lib/firmware";
   import { fanRpm, monitor } from "./lib/monitor.svelte";
 
   monitor.start();
 
   let settings = $state(false);
+  let drawerTab = $state<"connection" | "display" | "device" | "sensors" | "console">("connection");
   let pixels = $state(false);
   let heroW = $state(0);
   let winH = $state(0);
@@ -48,6 +50,12 @@
 <div class="app">
   <div class="backdrop" aria-hidden="true"></div>
   <TitleBar onSettings={() => (settings = true)} />
+  <UpdateBanner
+    onUpdate={() => {
+      drawerTab = "device";
+      settings = true;
+    }}
+  />
 
   <section class="hero" bind:clientWidth={heroW}>
     <div class="board" class:off={board === "off"}>
@@ -78,7 +86,7 @@
     <Telemetry id="gpu" lcd={2} metrics={monitor.last?.gpu} fan={fanRpm(monitor.last, "gpu")} samples={monitor.history} />
   </section>
 
-  <Drawer bind:open={settings} />
+  <Drawer bind:open={settings} bind:tab={drawerTab} />
 </div>
 
 <style>
@@ -86,7 +94,7 @@
     position: relative;
     height: 100vh;
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
     overflow: hidden;
   }
 
@@ -253,7 +261,7 @@
     }
     .app {
       overflow-y: auto;
-      grid-template-rows: auto auto auto;
+      grid-template-rows: auto auto auto auto;
     }
   }
 </style>

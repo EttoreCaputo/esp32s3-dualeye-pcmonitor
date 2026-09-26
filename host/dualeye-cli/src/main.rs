@@ -17,7 +17,7 @@ use std::time::Duration;
 use clap::Parser;
 use dualeye_core::bridge::{self, BridgeConfig, BridgeEvent};
 use dualeye_core::claude::statusline;
-use dualeye_core::{ClaudeUsage, Collector, Face, Faces, Memory, Snapshot, serial};
+use dualeye_core::{BoardFirmware, ClaudeUsage, Collector, Face, Faces, Memory, Snapshot, serial};
 
 #[derive(Parser)]
 #[command(name = "dualeye", version, about = "Stream PC sensors to the ESP32-S3 DualEye board")]
@@ -107,6 +107,11 @@ fn main() -> ExitCode {
             }
             BridgeEvent::Snapshot { .. } => {}
             BridgeEvent::BoardLog { line } => eprintln!("board: {line}"),
+            BridgeEvent::Firmware { firmware } => match firmware {
+                BoardFirmware::Version { version, .. } => println!("board runs DualEye firmware {version}"),
+                BoardFirmware::Legacy => println!("board runs DualEye firmware from before 0.2.0: reflash it from the app"),
+                BoardFirmware::Missing => eprintln!("board has no firmware: flash it from the app"),
+            },
             BridgeEvent::Disconnected { port, reason, permission_denied } => {
                 eprintln!("{port}: {reason}");
                 if permission_denied {

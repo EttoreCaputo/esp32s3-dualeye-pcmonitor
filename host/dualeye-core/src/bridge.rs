@@ -3,16 +3,20 @@
 //!
 //! Frontends observe the loop through [`BridgeEvent`]s: the CLI prints them,
 //! a Tauri app can forward them to the webview with `app.emit(..)`.
+//!
+//! Until the board says which firmware it runs, every few seconds the bridge
+//! also asks it (see [`crate::firmware`]).
 
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
 use crate::claude::ClaudeUsage;
+use crate::firmware::{self, BoardFirmware};
 use crate::sensors::Collector;
 use crate::serial;
 use crate::snapshot::{Faces, Snapshot};
@@ -52,6 +56,8 @@ pub enum BridgeEvent {
     Snapshot { snapshot: Snapshot, sent: bool },
     /// A line the firmware logged on the same USB port.
     BoardLog { line: String },
+    /// What the board runs; raised once per connection, and again if it reboots into another version.
+    Firmware { firmware: BoardFirmware },
     Disconnected { port: String, reason: String, permission_denied: bool },
 }
 
@@ -91,6 +97,18 @@ impl Drop for Bridge {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// Ask the firmware for its version this often until it has answered.
+const VERSION_QUERY_EVERY: Duration = Duration::from_secs(5);
+/// Queries a board may leave unanswered while showing snapshots before it counts as legacy firmware.
+const LEGACY_AFTER_QUERIES: u32 = 2;
+
+/// Shared by a session's writer, which asks, and its reader, which hears the answer.
+#[derive(Default)]
+struct FirmwareProbe {
+    known: AtomicBool,
+    queries: AtomicU32,
 }
 
 /// Run the bridge on the current thread until `stop` is set.
@@ -133,17 +151,25 @@ fn session(
     on_event(BridgeEvent::Connected { port: port.to_string() });
 
     let reader_stop = Arc::new(AtomicBool::new(false));
+    let probe = Arc::new(FirmwareProbe::default());
     let reader = {
         let rx = ser.try_clone()?;
         let flag = reader_stop.clone();
         let sink = on_event.clone();
-        thread::spawn(move || forward_board_log(rx, &flag, &sink))
+        let probe = probe.clone();
+        thread::spawn(move || forward_board_log(rx, &flag, &sink, &probe))
     };
 
     let result = (|| {
         sleep_unless_stopped(config.boot_wait, stop);
         let mut next = Instant::now();
+        let mut asked: Option<Instant> = None;
         while !stop.load(Ordering::Relaxed) {
+            if !probe.known.load(Ordering::Relaxed) && asked.is_none_or(|t| t.elapsed() >= VERSION_QUERY_EVERY) {
+                ser.write_all(firmware::VERSION_QUERY.as_bytes())?;
+                probe.queries.fetch_add(1, Ordering::Relaxed);
+                asked = Some(Instant::now());
+            }
             let mut snapshot = collector.sample();
             snapshot.face = Some(*config.faces.lock().unwrap());
             snapshot.claude = claude.sample();
@@ -168,9 +194,17 @@ fn session(
     result
 }
 
-fn forward_board_log(mut rx: Box<dyn serialport::SerialPort>, stop: &AtomicBool, sink: &EventSink) {
+fn forward_board_log(mut rx: Box<dyn serialport::SerialPort>, stop: &AtomicBool, sink: &EventSink, probe: &FirmwareProbe) {
     let mut buf = [0u8; 256];
     let mut line = Vec::new();
+    let mut reported: Option<BoardFirmware> = None;
+    let mut report = |firmware: BoardFirmware| {
+        probe.known.store(true, Ordering::Relaxed);
+        if reported.as_ref() != Some(&firmware) {
+            reported = Some(firmware.clone());
+            sink(BridgeEvent::Firmware { firmware });
+        }
+    };
     while !stop.load(Ordering::Relaxed) {
         match rx.read(&mut buf) {
             Ok(0) => {}
@@ -180,9 +214,21 @@ fn forward_board_log(mut rx: Box<dyn serialport::SerialPort>, stop: &AtomicBool,
                         b'\n' => {
                             let text = String::from_utf8_lossy(&line).trim_end_matches('\r').to_string();
                             line.clear();
-                            if !text.is_empty() {
-                                sink(BridgeEvent::BoardLog { line: text });
+                            if text.is_empty() {
+                                continue;
                             }
+                            if let Some(version) = firmware::parse_version_line(&text) {
+                                report(version);
+                            } else if !probe.known.load(Ordering::Relaxed) {
+                                if firmware::is_missing_app_log(&text) {
+                                    report(BoardFirmware::Missing);
+                                } else if firmware::is_snapshot_log(&text)
+                                    && probe.queries.load(Ordering::Relaxed) >= LEGACY_AFTER_QUERIES
+                                {
+                                    report(BoardFirmware::Legacy);
+                                }
+                            }
+                            sink(BridgeEvent::BoardLog { line: text });
                         }
                         _ if line.len() < 1024 => line.push(b),
                         _ => {}

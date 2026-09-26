@@ -52,5 +52,7 @@ void app_main(void)
     BaseType_t ui_ok = xTaskCreate(ui_refresh_task, "ui_refresh", 4096, NULL, 4, NULL);
     ESP_ERROR_CHECK(ui_ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
     metrics_io_start();
+    // A host already listening (e.g. right after flashing) learns the version without asking.
+    metrics_io_report_version();
     ESP_LOGI(TAG, "Watch UI ready, waiting for USB metrics");
 }

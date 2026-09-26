@@ -7,6 +7,8 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { DEFAULT_FACES, type Faces } from "./firmware";
+import { updateFor, type Update } from "./updates";
+import bundledVersion from "../../../../version.txt?raw";
 
 /** In MiB. System RAM under `cpu`, VRAM under `gpu`. */
 export type Memory = { used_mb: number; total_mb: number };
@@ -28,7 +30,11 @@ export type Snapshot = { v: number; ts: number; cpu?: Metrics; gpu?: Metrics; fa
 export type PortInfo = { name: string; vid: number; pid: number; product: string | null; is_board: boolean };
 export type Reading = { source: string; label: string; value: number; unit: string };
 export type Esptool = { python: string; version: string };
-export type FirmwareInfo = { size: number; esptool: Esptool | null };
+/** The app descriptor of the bundled image. */
+export type ImageInfo = { version: string; project: string; idf: string; built: string };
+export type FirmwareInfo = { size: number; bundled: ImageInfo | null; esptool: Esptool | null };
+/** `BoardFirmware` in dualeye-core: what the board said it runs. */
+export type BoardFirmware = { state: "version"; version: string; idf: string | null } | { state: "legacy" } | { state: "missing" };
 export type ChipInfo = {
   port: string;
   chip: string | null;
@@ -50,6 +56,7 @@ type BridgeEvent =
   | { kind: "connected"; port: string }
   | { kind: "snapshot"; snapshot: Snapshot; sent: boolean }
   | { kind: "board_log"; line: string }
+  | { kind: "firmware"; firmware: BoardFirmware }
   | { kind: "disconnected"; port: string; reason: string; permission_denied: boolean };
 
 type Status = {
@@ -60,6 +67,7 @@ type Status = {
   sent: Snapshot | null;
   sent_age_ms: number | null;
   connected_age_ms: number | null;
+  firmware: BoardFirmware | null;
   logs: string[];
   port_setting: string | null;
   faces: Faces;
@@ -106,6 +114,12 @@ class Monitor {
   /** First-use setup of esptool (Python download, virtualenv, pip), while it runs. */
   setup = $state<{ message: string; percent: number | null } | null>(null);
   chip = $state<ChipInfo | null>(null);
+  /** What the connected board runs; `null` until it says (or if it never does). */
+  boardFirmware = $state<BoardFirmware | null>(null);
+  /** The firmware the app flashes. */
+  bundled = $state<ImageInfo | null>(null);
+  /** Set when the board runs older DualEye firmware than the bundled one. */
+  update: Update | null = $derived(this.link === "connected" ? updateFor(this.boardFirmware, this.bundled?.version) : null);
 
   boardState: BoardState = $derived.by(() => {
     if (this.link !== "connected") return "off";
@@ -122,6 +136,7 @@ class Monitor {
     setInterval(() => (this.now = Date.now()), 250);
     if (this.preview) startPreviewFeed((e) => this.#apply(e), () => this.faces);
     else void this.#connect();
+    void this.firmwareInfo();
   }
 
   async #connect() {
@@ -138,6 +153,7 @@ class Monitor {
     this.shown = s.sent;
     if (s.sent_age_ms != null) this.sentAt = now - s.sent_age_ms;
     if (s.connected_age_ms != null) this.connectedAt = now - s.connected_age_ms;
+    this.boardFirmware = s.firmware;
     this.logs = s.logs;
   }
 
@@ -155,6 +171,7 @@ class Monitor {
         this.permissionDenied = false;
         this.connectedAt = now;
         this.shown = null;
+        this.boardFirmware = null;
         break;
       case "snapshot":
         this.last = e.snapshot;
@@ -167,6 +184,9 @@ class Monitor {
       case "board_log":
         this.logs.push(e.line);
         if (this.logs.length > LOG_LINES) this.logs.splice(0, this.logs.length - LOG_LINES);
+        break;
+      case "firmware":
+        this.boardFirmware = e.firmware;
         break;
       case "disconnected":
         this.link = "offline";
@@ -191,8 +211,11 @@ class Monitor {
   }
 
   async firmwareInfo(): Promise<FirmwareInfo> {
-    if (this.preview) return { size: 559360, esptool: previewEsptool };
-    return invoke<FirmwareInfo>("firmware_info");
+    const info: FirmwareInfo = this.preview
+      ? { size: 559360, bundled: { version: bundledVersion.trim(), project: "esp32s3-dualeye-pcmonitor", idf: "v6.1", built: "Sep 26 2026 16:05:04" }, esptool: previewEsptool }
+      : await invoke<FirmwareInfo>("firmware_info");
+    this.bundled = info.bundled;
+    return info;
   }
 
   /** Ask the chip who it is (resets the board). `port` null picks the detected board. */
@@ -206,7 +229,7 @@ class Monitor {
   async flash(port: string | null) {
     this.flashPercent = 0;
     await this.#runJob("flash", async () => {
-      if (this.preview) await previewFlash((e) => this.#applyFlash(e));
+      if (this.preview) await previewFlash((e) => this.#applyFlash(e), (e) => this.#apply(e));
       else await invoke("flash_board", { port });
       this.flashedAt = Date.now();
     });
@@ -288,6 +311,8 @@ function startPreviewFeed(emit: (e: BridgeEvent) => void, faces: () => Faces) {
   ];
   setTimeout(() => emit({ kind: "connected", port: "/dev/ttyACM0" }), 600);
   boot.forEach((line, i) => setTimeout(() => emit({ kind: "board_log", line }), 900 + i * 90));
+  // Firmware from before versioning, so the update offer shows up.
+  setTimeout(() => emit({ kind: "firmware", firmware: { state: "legacy" } }), 8000);
 
   const t0 = performance.now();
   const wave = (t: number, period: number, phase = 0) => Math.sin((t / period) * Math.PI * 2 + phase);
@@ -371,7 +396,7 @@ async function previewIdentify(emit: (e: FlashEvent) => void): Promise<ChipInfo>
   };
 }
 
-async function previewFlash(emit: (e: FlashEvent) => void) {
+async function previewFlash(emit: (e: FlashEvent) => void, bridge: (e: BridgeEvent) => void) {
   await previewSetup(emit);
   for (const line of ["esptool v5.4.0", "Connected to ESP32-S3 on /dev/ttyACM0:", "Flash will be erased from 0x00000000 to 0x00088fff..."]) {
     emit({ kind: "log", line });
@@ -385,6 +410,8 @@ async function previewFlash(emit: (e: FlashEvent) => void) {
     emit({ kind: "log", line });
     await sleep(200);
   }
+  bridge({ kind: "connected", port: "/dev/ttyACM0" });
+  setTimeout(() => bridge({ kind: "firmware", firmware: { state: "version", version: bundledVersion.trim(), idf: "v6.1" } }), 1200);
 }
 
 function previewReadings(s: Snapshot | null): Reading[] {

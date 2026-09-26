@@ -92,6 +92,15 @@
   const target = $derived(monitor.portSetting ?? (boards.length === 1 ? boards[0].name : null));
   const busy = $derived(monitor.job !== "idle");
 
+  const onBoard = $derived.by(() => {
+    const fw = monitor.boardFirmware;
+    if (monitor.link !== "connected") return { text: "—", note: "offline" };
+    if (!fw) return { text: "—", note: "asking…" };
+    if (fw.state === "version") return { text: `v${fw.version}`, note: fw.idf ? `IDF ${fw.idf}` : "" };
+    if (fw.state === "legacy") return { text: "before 0.2.0", note: "unversioned" };
+    return { text: "none", note: "blank flash" };
+  });
+
   async function identify() {
     await monitor.identify(monitor.portSetting);
     firmware = await monitor.firmwareInfo();
@@ -296,6 +305,14 @@
             <p class="empty">Checking esptool…</p>
           {:else}
             <dl class="facts">
+              <div><dt>On the board</dt><dd>{onBoard.text} {#if onBoard.note}<span class="muted sub">{onBoard.note}</span>{/if}</dd></div>
+              <div>
+                <dt>In the app</dt>
+                <dd>
+                  {firmware.bundled ? `v${firmware.bundled.version}` : "—"}
+                  {#if monitor.update}<span class="muted sub new">newer</span>{:else if firmware.bundled}<span class="muted sub">IDF {firmware.bundled.idf}</span>{/if}
+                </dd>
+              </div>
               <div><dt>Image</dt><dd>merged-binary.bin</dd></div>
               <div><dt>Size</dt><dd>{kb(firmware.size)} · at 0x0</dd></div>
               <div class="wide">
@@ -307,6 +324,19 @@
                 {/if}
               </div>
             </dl>
+            {#if monitor.update && monitor.update.changes.length && monitor.job !== "flash"}
+              <div class="changes">
+                <p class="hint">Updating to v{monitor.update.to} brings:</p>
+                {#each monitor.update.changes as release (release.version)}
+                  <div class="release">
+                    <span class="ver">v{release.version}</span>
+                    <ul>
+                      {#each release.notes as note, i (i)}<li>{note}</li>{/each}
+                    </ul>
+                  </div>
+                {/each}
+              </div>
+            {/if}
             {#if monitor.setup}
               <div class="progress" class:indeterminate={monitor.setup.percent === null}>
                 <span style:width="{monitor.setup.percent ?? 30}%"></span>
@@ -325,7 +355,9 @@
               </div>
             {:else}
               <div class="actions">
-                <button class="btn primary" disabled={busy || !target} onclick={() => (confirming = true)}>Flash firmware</button>
+                <button class="btn primary" disabled={busy || !target} onclick={() => (confirming = true)}>
+                  {monitor.update ? `Update to v${monitor.update.to}` : "Flash firmware"}
+                </button>
               </div>
             {/if}
           {/if}
@@ -648,6 +680,36 @@
     font-size: 10.5px;
     margin-left: 6px;
     word-break: break-all;
+  }
+  .muted.sub {
+    display: block;
+    margin: 5px 0 0;
+  }
+  .muted.new {
+    color: var(--cpu);
+  }
+  .changes {
+    margin-top: 14px;
+    display: grid;
+    gap: 10px;
+  }
+  .changes .hint {
+    margin: 0;
+  }
+  .release {
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    gap: 8px;
+  }
+  .ver {
+    font: 500 11px/1.6 var(--mono);
+    color: var(--cpu);
+  }
+  .release ul {
+    margin: 0;
+    padding-left: 16px;
+    font: 400 12.5px/1.55 var(--sans);
+    color: var(--dim);
   }
 
   .target {

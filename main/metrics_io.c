@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -12,6 +13,13 @@
 #define METRICS_IO_LINE_MAX 1024
 
 static const char *TAG = "metrics_io";
+
+void metrics_io_report_version(void)
+{
+    const esp_app_desc_t *app = esp_app_get_description();
+    printf("{\"dualeye\":\"%s\",\"idf\":\"%s\"}\n", app->version, app->idf_ver);
+    fflush(stdout);
+}
 
 static void metrics_io_task(void *arg)
 {
@@ -33,7 +41,10 @@ static void metrics_io_task(void *arg)
             continue;
         }
         if (c == '\n') {
-            if (!overflow && len > 0 && line[0] == '{') {
+            if (!overflow && len == sizeof(METRICS_IO_VERSION_QUERY) - 1
+                && memcmp(line, METRICS_IO_VERSION_QUERY, len) == 0) {
+                metrics_io_report_version();
+            } else if (!overflow && len > 0 && line[0] == '{') {
                 line[len] = '\0';
                 metrics_snapshot_t snap;
                 esp_err_t err = metrics_parse_line(line, &snap);

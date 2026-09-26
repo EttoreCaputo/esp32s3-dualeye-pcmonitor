@@ -17,7 +17,7 @@ A standalone Rust program on the host reads the sensors straight from the OS (no
 | `host/dualeye-cli` | `dualeye` command-line bridge built on the library |
 | `host/dualeye-app` | Desktop app ([Tauri 2](https://v2.tauri.app/) + Svelte): live mirror of both screens, history, sensors, board console, firmware flashing |
 
-End users only need the desktop app installer; everything below the app section is for working on the source (see [Building from source](#building-from-source)).
+End users only need the desktop app installer, from the [latest release](https://github.com/EttoreCaputo/esp32s3-dualeye-pcmonitor/releases/latest) (Windows, macOS, Linux; the firmware is inside); everything below the app section is for working on the source (see [Building from source](#building-from-source)).
 
 **Stack:** ESP-IDF ≥ 5.4 · [lvgl/lvgl](https://components.espressif.com/components/lvgl/lvgl) `9.3.0` · [espressif/esp_lcd_gc9a01](https://components.espressif.com/components/espressif/esp_lcd_gc9a01) `^2.0.4` · Rust (sysinfo, nvml-wrapper, serialport)
 
@@ -107,7 +107,15 @@ That is about 45 MB downloaded once (internet needed only then) and ~170 MB on d
 esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x0 build/merged-binary.bin
 ```
 
-The app talks to the bridge through `dualeye_core::Bridge`; its events (`waiting`, `connected`, `snapshot`, `board_log`, `disconnected`) are forwarded to the webview as `bridge`.
+### Firmware updates
+
+The firmware knows its version (`version.txt`, which ESP-IDF builds into the image's app descriptor) and prints it as `{"dualeye":"0.2.0","idf":"v6.1"}` when it boots and whenever it reads a `?version` line. The bridge asks every 5 s after connecting until the board answers; firmware from before 0.2.0 ignores the question but keeps logging the snapshots it gets, so after two unanswered questions it counts as "before 0.2.0". A ROM looping on `invalid header` means a blank flash.
+
+The app reads the version of the image it carries from that same app descriptor. When the board runs an older one, a banner offers the update and lists what changes, taken from the sections of [`FIRMWARE_CHANGELOG.md`](FIRMWARE_CHANGELOG.md) newer than the board's version; **Update…** opens the Device tab to flash it.
+
+To release a new firmware: bump `version.txt`, add its `## <version>` section to `FIRMWARE_CHANGELOG.md` (the release pipeline fails without it), and rebuild the image.
+
+The app talks to the bridge through `dualeye_core::Bridge`; its events (`waiting`, `connected`, `snapshot`, `board_log`, `firmware`, `disconnected`) are forwarded to the webview as `bridge`.
 
 ## Building from source
 
@@ -116,6 +124,9 @@ The app talks to the bridge through `dualeye_core::Bridge`; its events (`waiting
 ```
 main/                     firmware (ESP-IDF component: display, LVGL UI, metrics parser)
 build/merged-binary.bin   firmware image the desktop app flashes (the only tracked file in build/)
+version.txt               firmware version, built into the image
+FIRMWARE_CHANGELOG.md     what each firmware version changes, shown by the app's update offer
+.github/workflows/        release pipeline
 sdkconfig.defaults        firmware config (target esp32s3, 16 MB flash, USB Serial/JTAG console)
 .devcontainer/            ESP-IDF container for VS Code
 host/                     Cargo workspace
@@ -215,10 +226,18 @@ Where things live in the app:
 | Claude Code usage and the status line helper | `host/dualeye-core/src/claude.rs`, `claude/statusline.rs` |
 | esptool runner and first-use setup | `host/dualeye-core/src/flasher.rs`, `flasher/setup.rs` |
 
+### Releases
+
+Every push to `main` runs [`.github/workflows/release.yml`](.github/workflows/release.yml): it builds the firmware with ESP-IDF v6.1 (`idf.py build merge-bin`), checks that the image carries `version.txt` and that the changelog has a section for it, then builds the app on Linux (AppImage, deb, rpm), Windows (msi, NSIS) and macOS (dmg, Apple Silicon and Intel) with that fresh image embedded, and uploads everything, plus the bare firmware image, to the GitHub release `v<version>` from `src-tauri/tauri.conf.json`. Bump that version to cut a new release; until then each merge replaces the assets of the current one. The builds aren't code-signed, so macOS and Windows warn on first launch.
+
 ### Checks
 
 ```bash
 cd host && cargo test -p dualeye-core --features provision
+```
+
+```bash
+cd host && cargo test -p dualeye-app      # the bundled image carries version.txt
 ```
 
 ```bash
